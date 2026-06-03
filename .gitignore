@@ -1,0 +1,34 @@
+# ---- Excluded from the public repo (your call-outs) ----
+/Results.rtf
+/smoke_test.sh
+/considerations.rtf
+
+# Personal planning doc - delete this line if you want it public
+/Portfolio_Plan.docx
+
+# ---- Third-party data: not redistributed (see Datasets/README.md to obtain) ----
+/Datasets/
+
+# ---- Secrets / environment (never commit) ----
+.env
+.env.*
+*.key
+*.pem
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+.venv/
+venv/
+*.egg-info/
+.mypy_cache/
+
+# ---- Office temp / lock files ----
+~$*
+
+# ---- macOS / editors ----
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,438 @@
+{
+  "timestamp": "2026-06-02T21:21:59.086836",
+  "expert_system": {
+    "overall": {
+      "rate": 1.0,
+      "n": 12
+    },
+    "standard": {
+      "rate": 1.0,
+      "n": 5
+    },
+    "edge_cases": {
+      "rate": 1.0,
+      "n": 7
+    },
+    "by_edge_type": {
+      "mono_resistance": {
+        "rate": 1.0,
+        "n": 1
+      },
+      "spelling_variation": {
+        "rate": 1.0,
+        "n": 1
+      },
+      "multi_condition": {
+        "rate": 1.0,
+        "n": 1
+      },
+      "negation": {
+        "rate": 1.0,
+        "n": 1
+      },
+      "borderline": {
+        "rate": 1.0,
+        "n": 1
+      },
+      "unknown_mutation": {
+        "rate": 1.0,
+        "n": 1
+      },
+      "no_results": {
+        "rate": 1.0,
+        "n": 1
+      }
+    },
+    "by_check_type": {
+      "content_match": {
+        "rate": 1.0,
+        "n": 4
+      },
+      "classification": {
+        "rate": 1.0,
+        "n": 4
+      },
+      "empty_expected": {
+        "rate": 1.0,
+        "n": 3
+      },
+      "absence": {
+        "rate": 1.0,
+        "n": 1
+      }
+    },
+    "measured": [
+      {
+        "id": 103,
+        "edge_type": "ambiguous",
+        "passed": true,
+        "result_count": 1
+      }
+    ]
+  },
+  "cbr": {
+    "k": 5,
+    "total_cases": 1000,
+    "regimen_accuracy": {
+      "mean": 0.674,
+      "std": 0.025,
+      "ci_lower": 0.654,
+      "ci_upper": 0.694
+    },
+    "outcome_accuracy": {
+      "mean": 0.745,
+      "std": 0.027,
+      "ci_lower": 0.723,
+      "ci_upper": 0.765
+    },
+    "regimen_mode_accuracy": {
+      "mean": 0.749,
+      "std": 0.024,
+      "ci_lower": 0.732,
+      "ci_upper": 0.768
+    },
+    "by_profile": {
+      "Susceptible": {
+        "accuracy": 0.99,
+        "n": 500
+      },
+      "MonoResistant": {
+        "accuracy": 0.55,
+        "n": 120
+      },
+      "XDR": {
+        "accuracy": 0.217,
+        "n": 60
+      },
+      "PolyResistant": {
+        "accuracy": 0.183,
+        "n": 60
+      },
+      "MDR": {
+        "accuracy": 0.378,
+        "n": 180
+      },
+      "PreXDR": {
+        "accuracy": 0.263,
+        "n": 80
+      }
+    },
+    "baseline": {
+      "outcome": 0.738,
+      "regimen": 0.81
+    },
+    "calibration": {
+      "ece": 0.0754,
+      "ece_temperature_scaled": 0.1765,
+      "temperature_mean": 4.248,
+      "temperature_per_fold": [
+        4.603,
+        4.559,
+        5.105,
+        2.544,
+        4.429
+      ],
+      "reliability": [
+        {
+          "bin": "0.0-0.1",
+          "confidence": 0.05,
+          "accuracy": 0.0,
+          "count": 0
+        },
+        {
+          "bin": "0.1-0.2",
+          "confidence": 0.1,
+          "accuracy": 0.5,
+          "count": 2
+        },
+        {
+          "bin": "0.2-0.3",
+          "confidence": 0.2,
+          "accuracy": 0.389,
+          "count": 18
+        },
+        {
+          "bin": "0.3-0.4",
+          "confidence": 0.3,
+          "accuracy": 0.5,
+          "count": 30
+        },
+        {
+          "bin": "0.4-0.5",
+          "confidence": 0.4,
+          "accuracy": 0.44,
+          "count": 25
+        },
+        {
+          "bin": "0.5-0.6",
+          "confidence": 0.5,
+          "accuracy": 0.597,
+          "count": 72
+        },
+        {
+          "bin": "0.6-0.7",
+          "confidence": 0.6,
+          "accuracy": 0.663,
+          "count": 98
+        },
+        {
+          "bin": "0.7-0.8",
+          "confidence": 0.7,
+          "accuracy": 0.741,
+          "count": 185
+        },
+        {
+          "bin": "0.8-0.9",
+          "confidence": 0.8,
+          "accuracy": 0.82,
+          "count": 295
+        },
+        {
+          "bin": "0.9-1.0",
+          "confidence": 0.925,
+          "accuracy": 0.789,
+          "count": 275
+        }
+      ]
+    }
+  },
+  "methodology": {
+    "cbr": "5-fold stratified cross-validation",
+    "confidence_intervals": "95% bootstrap (n=1000)",
+    "calibration": "ECE of the predicted success probability vs actual outcome; raw probability reported. Per-fold temperature scaling (leak-free) was tested and rejected as it raised ECE.",
+    "baseline": "outcome=always-predict-success; regimen=most-frequent-regimen-per-profile",
+    "regimen_mode": "diagnostic predictor: most-frequent regimen among retrieved neighbors (ignores outcome), to separate objective mismatch from weak retrieval"
+  },
+  "cryptic_classification": {
+    "test_isolates": 13118,
+    "scheme": "below-MDR / MDR / PreXDR / XDR; no genotypic call counts as below-MDR",
+    "scores": {
+      "rule_engine": {
+        "overall": 0.839,
+        "by_tier": {
+          "below-MDR": {
+            "accuracy": 0.92,
+            "n": 9613
+          },
+          "MDR": {
+            "accuracy": 0.63,
+            "n": 2067
+          },
+          "PreXDR": {
+            "accuracy": 0.63,
+            "n": 945
+          },
+          "XDR": {
+            "accuracy": 0.529,
+            "n": 493
+          }
+        },
+        "confusion": {
+          "below-MDR": {
+            "below-MDR": 8846,
+            "MDR": 311,
+            "PreXDR": 305,
+            "XDR": 151
+          },
+          "MDR": {
+            "below-MDR": 467,
+            "MDR": 1302,
+            "PreXDR": 243,
+            "XDR": 55
+          },
+          "PreXDR": {
+            "below-MDR": 212,
+            "MDR": 60,
+            "PreXDR": 595,
+            "XDR": 78
+          },
+          "XDR": {
+            "below-MDR": 174,
+            "MDR": 13,
+            "PreXDR": 45,
+            "XDR": 261
+          }
+        }
+      },
+      "who_catalog": {
+        "overall": 0.84,
+        "by_tier": {
+          "below-MDR": {
+            "accuracy": 0.92,
+            "n": 9613
+          },
+          "MDR": {
+            "accuracy": 0.632,
+            "n": 2067
+          },
+          "PreXDR": {
+            "accuracy": 0.633,
+            "n": 945
+          },
+          "XDR": {
+            "accuracy": 0.538,
+            "n": 493
+          }
+        },
+        "confusion": {
+          "below-MDR": {
+            "below-MDR": 8846,
+            "MDR": 311,
+            "PreXDR": 305,
+            "XDR": 151
+          },
+          "MDR": {
+            "below-MDR": 461,
+            "MDR": 1307,
+            "PreXDR": 244,
+            "XDR": 55
+          },
+          "PreXDR": {
+            "below-MDR": 208,
+            "MDR": 60,
+            "PreXDR": 598,
+            "XDR": 79
+          },
+          "XDR": {
+            "below-MDR": 169,
+            "MDR": 13,
+            "PreXDR": 46,
+            "XDR": 265
+          }
+        }
+      }
+    },
+    "agreement": {
+      "engine_catalog_match": 0.999,
+      "resistant_isolates": 3505,
+      "both_correct": 2158,
+      "both_wrong": 1335,
+      "engine_only_wrong": 12,
+      "catalog_only_wrong": 0
+    },
+    "engine_only_cases": [
+      {
+        "uniqueid": "site.06.subj.06TB_0004.lab.06MIL0852.iso.1",
+        "truth": "XDR",
+        "engine": "below-MDR",
+        "catalog": "XDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0004.lab.06MIL0995.iso.1",
+        "truth": "XDR",
+        "engine": "below-MDR",
+        "catalog": "XDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0004.lab.06MIL1009.iso.1",
+        "truth": "XDR",
+        "engine": "below-MDR",
+        "catalog": "XDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0027.lab.06MIL0488.iso.1",
+        "truth": "XDR",
+        "engine": "below-MDR",
+        "catalog": "XDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0029.lab.06MIL0490.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0058.lab.06MIL0519.iso.1",
+        "truth": "PreXDR",
+        "engine": "below-MDR",
+        "catalog": "PreXDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0252.lab.06MIL0713.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0265.lab.06MIL0856.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0273.lab.06MIL0864.iso.1",
+        "truth": "PreXDR",
+        "engine": "below-MDR",
+        "catalog": "PreXDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0279.lab.06MIL0870.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.SKT_0005-14.lab.06MIL0457.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.ENA.subj.SAMEA1403638.lab.1.iso.1",
+        "truth": "PreXDR",
+        "engine": "XDR",
+        "catalog": "PreXDR",
+        "resistant_drugs": [
+          "amikacin",
+          "ethambutol",
+          "ethionamide",
+          "isoniazid",
+          "kanamycin",
+          "levofloxacin",
+          "moxifloxacin",
+          "pyrazinamide",
+          "rifampin",
+          "streptomycin"
+        ],
+        "mutations": [
+          "NA_fabG1@L203L&fabG1@g609a",
+          "NA_fabG1@L203L&fabG1@g609a",
+          "eis_c-14t",
+          "eis_c-14t",
+          "embB_M306V",
+          "ethA_768_del_g",
+          "gyrA_A90V:21",
+          "gyrA_A90V:21",
+          "gyrA_D94G:61",
+          "gyrA_D94G:61",
+          "katG_S315T",
+          "pncA_a-11c",
+          "rpoB_S450L",
+          "rrs_c517t"
+        ]
+      }
+    ]
+  }
+}

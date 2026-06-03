@@ -1,0 +1,17 @@
+# Runtime dependencies for the TB drug-resistance hybrid system.
+# Lower bounds reflect the APIs the code actually uses:
+#   neo4j>=5      -> session.execute_read (read_query)
+#   streamlit>=1.27 -> st.rerun
+#   openpyxl      -> backend for pandas read_excel on the WHO .xlsx
+# For a fully reproducible deploy, replace these with the exact versions from
+# your working environment: pip freeze > requirements.txt
+streamlit>=1.27.0
+neo4j>=5.0.0
+anthropic>=0.30.0
+pandas>=1.5.0
+numpy>=1.24.0
+scipy>=1.10.0
+python-dotenv>=1.0.0
+openpyxl>=3.0.0
+
+# Tests only (not needed at runtime): pytest>=7.0.0
