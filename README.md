@@ -1,3 +1,5 @@
+[![CI](https://github.com/jsf3467v/tb-drug-resistance/actions/workflows/ci.yml/badge.svg)](https://github.com/jsf3467v/tb-drug-resistance/actions/workflows/ci.yml)
+
 # TB Drug-Resistance Decision Support
 
 A neuro-symbolic clinical reasoning system for *Mycobacterium tuberculosis*. The system combines a WHO-grounded knowledge graph, a symbolic rule engine, case-based reasoning over patient cases, and a natural-language query layer. Its symbolic core has been validated against real-world resistance measurements from the CRyPTIC consortium.
