@@ -1,8 +1,8 @@
-import re
 from pathlib import Path
 
 import pandas as pd
-import numpy as np
+
+from config import DRUG_ALIASES
 
 
 GENE_LOCUS = {
@@ -14,20 +14,17 @@ GENE_LOCUS = {
     'Rv1129c': 'mshA', 'Rv0565c': 'ddn', 'Rv3547': 'fbiA', 'Rv3261': 'fbiB',
     'Rv1173': 'fbiC', 'Rv0407': 'fgd1', 'Rv2983': 'fbiD', 'Rv1905c': 'fprA',
     'Rv3806c': 'ubiA', 'Rv2535c': 'pepQ', 'Rv0340': 'iniA', 'Rv0341': 'iniB',
-    'Rv0342': 'iniC', 'Rv1630': 'rpsL', 'Rv0682': 'rpsA', 'Rv3423c': 'alr',
+    'Rv0342': 'iniC', 'Rv1630': 'rpsA', 'Rv0682': 'rpsL', 'Rv3423c': 'alr',
     'Rv0486': 'ald', 'Rv3790': 'dprE2', 'Rv1979c': 'lprG', 'Rv0849': 'glpK',
-    'Rv2752c': 'Rv2752c', 'Rv2477c': 'Rv2477c', 'Rv1634': 'rpsA', 'Rv1438': 'thyA',
+    'Rv2752c': 'Rv2752c', 'Rv2477c': 'Rv2477c', 'Rv1438': 'thyA',
     'Rv2447c': 'folC', 'Rv3002c': 'thyX', 'Rv1626': 'ndh', 'Rv0885': 'embC',
     'Rv3804c': 'embA', 'Rv3265c': 'aftA', 'Rv2220': 'glf', 'Rv0193': 'pykA',
     'Rv3232c': 'alr', 'Rv3266c': 'dprE1', 'Rv0450c': 'mmpL5', 'Rv1854c': 'ndh',
     'Rv1483': 'fabG1', 'Rv2459': 'ribD', 'Rv1592c': 'ndhA'
 }
 
-# WHO drug spellings that differ from the system's canonical names. Any drug not
-# listed passes through unchanged, so only genuine remappings belong here.
-DRUG_ALIASES = {
-    'rifampicin': 'rifampin'
-}
+# Grading groups 1 and 2 are associated with resistance. Groups 3 to 5 are dropped.
+GRADING_CONFIDENCE = {1: 'high', 2: 'moderate'}
 
 # Case-insensitive lookup from either a locus id or a gene symbol to the standard
 # gene symbol, derived once from GENE_LOCUS so normalization is a single dict hit
@@ -54,29 +51,22 @@ class WHOCatalog:
         return self.data
 
     def _clean(self, df):
-        core_cols = ['drug', 'gene', 'mutation', 'variant', 'tier']
-        df = df[core_cols].copy()
-        df = df.dropna(subset=['drug', 'gene', 'tier'])
-        return df
+        # Keep grading groups 1 and 2, with confidence from the grading.
+        gradings = [c for c in df.columns if 'grading' in str(c).lower()]
+        grading = next((c for c in gradings if 'final' in str(c).lower()), gradings[0])
+        cols = ['drug', 'gene', 'mutation', 'variant', 'tier']
+        df = df[cols + [grading]].dropna(subset=['drug', 'gene', 'tier', grading]).copy()
+        group = df[grading].str.extract(r'^\s*(\d)')[0].astype('Int64')
+        df['confidence'] = group.map(GRADING_CONFIDENCE)
+        return df.dropna(subset=['confidence'])
 
-    def _format_mutation_id(self, gene, variant):
-        """Format a WHO variant to match the system's mutation IDs. A lowercase
-        nucleotide change like '1349a>g' is reordered to 'a1349g'; an already
-        gene-prefixed variant is kept; anything else is prefixed with the gene."""
-        if not gene or not variant:
-            return variant
-
-        variant = str(variant).strip()
-
-        if variant.startswith(f"{gene}_"):
-            return variant
-
-        nucl_match = re.match(r'^(\d+)([a-z])>([a-z])$', variant)
-        if nucl_match:
-            pos, ref, alt = nucl_match.groups()
-            return f"{gene}_{ref}{pos}{alt}"
-
-        return f"{gene}_{variant}"
+    @staticmethod
+    def mutation_id(gene, variant):
+        # Canonical gene_token id. The variant is gene-prefixed HGVS, so the token
+        # is everything after the first underscore.
+        gene = WHOCatalog._normalize_gene(gene)
+        token = str(variant).split('_', 1)[-1]
+        return f"{gene}_{token}"
 
     @staticmethod
     def _normalize_gene(who_gene_name):
@@ -98,6 +88,11 @@ class WHOCatalog:
         if self.data is None:
             self.read()
 
+        # tier_1_count/tier_2_count break the loaded rows down by the WHO gene
+        # `tier` column (tier 1 = established resistance genes, tier 2 = candidate),
+        # a different axis from the grading group that _clean filters on to decide
+        # what loads. They need not sum to total_mutations, which is the row count
+        # kept after the grading-group 1/2 filter.
         return {
             'total_mutations': len(self.data),
             'unique_drugs': self.data['drug'].nunique(),
@@ -107,19 +102,16 @@ class WHOCatalog:
         }
 
     def _unique_mutations(self, df):
-        """Normalize the catalog column-wise and drop duplicate (mutation_id, drug)
-        pairs. Only the gene-prefix formatting stays per-value, since its regex
-        reordering has no clean column-wise form."""
+        """Canonical ids per isolate, deduped on (mutation_id, drug)."""
         gene = df['gene'].map(self._normalize_gene)
-        variant = df['variant'].fillna(df['mutation']).astype(str)
-        tier = df['tier'].astype(int)
+        token = df['variant'].fillna(df['mutation']).astype(str).str.split('_', n=1).str[-1]
 
         out = pd.DataFrame({
-            'mutation_id': [self._format_mutation_id(g, v) for g, v in zip(gene, variant)],
+            'mutation_id': (gene.astype(str) + '_' + token).to_numpy(),
             'gene': gene.to_numpy(),
             'drug': df['drug'].map(self._normalize_drug).to_numpy(),
-            'tier': tier.to_numpy(),
-            'confidence': np.where(tier.to_numpy() == 1, 'high', 'moderate'),
+            'tier': df['tier'].astype(int).to_numpy(),
+            'confidence': df['confidence'].to_numpy(),
         })
         out = out.drop_duplicates(subset=['mutation_id', 'drug'])
         return out.to_dict('records')

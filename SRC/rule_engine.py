@@ -46,14 +46,10 @@ class RuleEngine:
             source='WHO 2022 Guidelines'
         )
 
-    # XDR and pre-XDR are classified by the pre-2021 (2006) WHO definitions, which
-    # are injectable-based: XDR = MDR + fluoroquinolone + second-line injectable
-    # resistance, pre-XDR = MDR + fluoroquinolone or injectable. The current (Jan
-    # 2021) WHO definitions replaced the injectables with Group A drugs, so XDR is
-    # now MDR/RR + fluoroquinolone + bedaquiline or linezolid resistance. The drug
-    # model and synthetic cases carry no bedaquiline/linezolid phenotypic
-    # resistance that the 2021 definition needs, so the historical definition is
-    # used deliberately and labeled as such. See README Limitations.
+    # XDR and pre-XDR use the pre-2021 (2006) injectable-based WHO definitions, not
+    # the current Group A based ones, because the data carries no bedaquiline or
+    # linezolid phenotypes the 2021 definition needs. Deliberate. See README Limitations.
+
     def _xdr_detection(self):
         return Rule(
             rule_id='RC002',
@@ -151,7 +147,7 @@ class RuleEngine:
             'strain': strain_id,
             'recommendations': results,
             'rules_fired': self.fired,
-            'who_confidence': self._evidence_confidence(facts['mutations'])
+            'canonical_gene_fraction': self._canonical_gene_fraction(facts['mutations'])
         }
 
     def facts(self, strain_id):
@@ -324,12 +320,15 @@ class RuleEngine:
                 recommendations['monitoring'].append(
                     {'parameter': parameter, 'threshold': threshold, 'rule': rule_id})
 
-    def _evidence_confidence(self, mutations):
-        total = len(mutations)
-        if total == 0:
+    def _canonical_gene_fraction(self, mutations):
+        # Share of distinct mutations whose gene is a canonical resistance gene.
+        # This reads gene membership only, not the WHO grading tier. One row per
+        # mutation-drug edge arrives here, so distinct mutations keep it stable.
+        genes = {mut.get('mutation'): mut.get('gene') for mut in mutations}
+        if not genes:
             return 0.0
-        high = sum(1 for mut in mutations if mut.get('gene') in HIGH_CONF_GENES)
-        return round(high / total, 2)
+        high = sum(gene in HIGH_CONF_GENES for gene in genes.values())
+        return round(high / len(genes), 2)
 
     def _backward_chain(self, goal):
         recommendations = self._empty_recommendations()

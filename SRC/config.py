@@ -19,7 +19,7 @@ Drug:
 
 Mutation:
   Properties:
-    - mutation_id: string (REQUIRED, UNIQUE) - e.g., "rpoB_S450L"
+    - mutation_id: string (REQUIRED, UNIQUE) - e.g., "rpoB_p.Ser450Leu"
     - position: integer - e.g., 450
     - ref_amino_acid: string - e.g., "S"
     - alt_amino_acid: string - e.g., "L"
@@ -74,9 +74,11 @@ RELATIONSHIP TYPES
 
 IMPORTANT NOTES
 - Drug names are lowercase: "rifampin", "isoniazid", "ethambutol"
+- Drug names use American spelling. Query rifampicin as rifampin.
 - Gene names are exact: "rpoB", "katG", "inhA", "embB", "pncA", "gyrA", "gyrB"
 - Use MATCH before WHERE
-- Always use parameterized queries with $variable syntax
+- For a question with several conditions, AND every condition in one WHERE so all must hold.
+- Inline literal values directly in the query; the read path does not bind $parameters
 """
 
 EXAMPLES = """
@@ -176,3 +178,9 @@ Cypher: MATCH (s:Strain)
                collect(DISTINCT p.type) as profiles
         ORDER BY lineage
 """
+
+# Drug-name variants. The WHO spelling rifampicin maps to the catalog's American
+# spelling rifampin, so a query on either name resolves to the same drug node. The
+# catalog loader and the NL layer import this map. The feature builder keeps its
+# own copy to stay standalone.
+DRUG_ALIASES = {'rifampicin': 'rifampin'}

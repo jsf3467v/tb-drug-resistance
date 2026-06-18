@@ -1,0 +1,1498 @@
+{
+  "timestamp": "2026-06-18T17:19:35.946276",
+  "expert_system": {
+    "model": "claude-sonnet-4-6",
+    "method": "execution match of generated Cypher against a gold query",
+    "overall": {
+      "rate": 0.909,
+      "n": 11
+    },
+    "by_category": {
+      "lookup": {
+        "rate": 0.5,
+        "n": 2
+      },
+      "filter": {
+        "rate": 1.0,
+        "n": 1
+      },
+      "aggregation": {
+        "rate": 1.0,
+        "n": 1
+      },
+      "spelling": {
+        "rate": 1.0,
+        "n": 1
+      },
+      "negation": {
+        "rate": 1.0,
+        "n": 1
+      },
+      "conjunction": {
+        "rate": 1.0,
+        "n": 1
+      },
+      "unknown_entity": {
+        "rate": 1.0,
+        "n": 1
+      },
+      "no_results": {
+        "rate": 1.0,
+        "n": 1
+      },
+      "unanswerable": {
+        "rate": 1.0,
+        "n": 2
+      }
+    },
+    "failures": [
+      {
+        "id": 2,
+        "category": "lookup",
+        "passed": false,
+        "result_count": 0,
+        "time_ms": 2160.7,
+        "failure": "Query execution error: {code: Memgraph.ClientError.MemgraphError.MemgraphError} {message: Unbound variable: r.}",
+        "cypher": "MATCH (s:Strain {strain_id: 'TB001'})-[:HAS_MUTATION]->(m:Mutation)-[:CONFERS_RESISTANCE]->(d:Drug)\nRETURN d.name as drug, d.class as drug_class, collect(DISTINCT m.mutation_id) as mutations, collect(DISTINCT r.level) as resistance_levels\nORDER BY drug_class, drug"
+      }
+    ]
+  },
+  "cbr": {
+    "k": 5,
+    "total_cases": 1000,
+    "regimen_accuracy": {
+      "mean": 0.674,
+      "std": 0.025,
+      "ci_lower": 0.654,
+      "ci_upper": 0.694
+    },
+    "outcome_accuracy": {
+      "mean": 0.745,
+      "std": 0.027,
+      "ci_lower": 0.723,
+      "ci_upper": 0.765
+    },
+    "regimen_mode_accuracy": {
+      "mean": 0.749,
+      "std": 0.024,
+      "ci_lower": 0.732,
+      "ci_upper": 0.768
+    },
+    "by_profile": {
+      "Susceptible": {
+        "accuracy": 0.99,
+        "n": 500
+      },
+      "MonoResistant": {
+        "accuracy": 0.55,
+        "n": 120
+      },
+      "XDR": {
+        "accuracy": 0.217,
+        "n": 60
+      },
+      "PolyResistant": {
+        "accuracy": 0.183,
+        "n": 60
+      },
+      "MDR": {
+        "accuracy": 0.378,
+        "n": 180
+      },
+      "PreXDR": {
+        "accuracy": 0.263,
+        "n": 80
+      }
+    },
+    "baseline": {
+      "outcome": 0.738,
+      "regimen": 0.81
+    },
+    "calibration": {
+      "ece": 0.0754,
+      "brier": 0.1924,
+      "ece_temperature_scaled": 0.1765,
+      "temperature_mean": 4.248,
+      "temperature_per_fold": [
+        4.603,
+        4.559,
+        5.105,
+        2.544,
+        4.429
+      ],
+      "reliability": [
+        {
+          "bin": "0.0-0.1",
+          "confidence": 0.05,
+          "accuracy": 0.0,
+          "count": 0
+        },
+        {
+          "bin": "0.1-0.2",
+          "confidence": 0.1,
+          "accuracy": 0.5,
+          "count": 2
+        },
+        {
+          "bin": "0.2-0.3",
+          "confidence": 0.2,
+          "accuracy": 0.389,
+          "count": 18
+        },
+        {
+          "bin": "0.3-0.4",
+          "confidence": 0.3,
+          "accuracy": 0.5,
+          "count": 30
+        },
+        {
+          "bin": "0.4-0.5",
+          "confidence": 0.4,
+          "accuracy": 0.44,
+          "count": 25
+        },
+        {
+          "bin": "0.5-0.6",
+          "confidence": 0.5,
+          "accuracy": 0.597,
+          "count": 72
+        },
+        {
+          "bin": "0.6-0.7",
+          "confidence": 0.6,
+          "accuracy": 0.663,
+          "count": 98
+        },
+        {
+          "bin": "0.7-0.8",
+          "confidence": 0.7,
+          "accuracy": 0.741,
+          "count": 185
+        },
+        {
+          "bin": "0.8-0.9",
+          "confidence": 0.8,
+          "accuracy": 0.82,
+          "count": 295
+        },
+        {
+          "bin": "0.9-1.0",
+          "confidence": 0.925,
+          "accuracy": 0.789,
+          "count": 275
+        }
+      ]
+    }
+  },
+  "methodology": {
+    "cbr": "5-fold stratified cross-validation",
+    "confidence_intervals": "95% bootstrap (n=1000)",
+    "calibration": "ECE of the predicted success probability vs actual outcome; raw probability reported. Per-fold temperature scaling (leak-free) was tested and rejected as it raised ECE.",
+    "baseline": "outcome=always-predict-success; regimen=most-frequent-regimen-per-profile",
+    "regimen_mode": "diagnostic predictor: most-frequent regimen among retrieved neighbors (ignores outcome), to separate objective mismatch from weak retrieval"
+  },
+  "cryptic_classification": {
+    "eval_isolates": 65588,
+    "scheme": "below-MDR / MDR / PreXDR / XDR; no genotypic call counts as below-MDR",
+    "scores": {
+      "rule_engine": {
+        "overall": 0.834,
+        "balanced": 0.674,
+        "macro_f1": 0.662,
+        "by_tier": {
+          "below-MDR": {
+            "accuracy": 0.916,
+            "n": 48065
+          },
+          "MDR": {
+            "accuracy": 0.619,
+            "n": 10335
+          },
+          "PreXDR": {
+            "accuracy": 0.615,
+            "n": 4725
+          },
+          "XDR": {
+            "accuracy": 0.547,
+            "n": 2463
+          }
+        },
+        "rates": {
+          "below-MDR": {
+            "sensitivity": 0.916,
+            "specificity": 0.754,
+            "precision": 0.911,
+            "n": 48065
+          },
+          "MDR": {
+            "sensitivity": 0.619,
+            "specificity": 0.963,
+            "precision": 0.758,
+            "n": 10335
+          },
+          "PreXDR": {
+            "sensitivity": 0.615,
+            "specificity": 0.949,
+            "precision": 0.483,
+            "n": 4725
+          },
+          "XDR": {
+            "sensitivity": 0.547,
+            "specificity": 0.977,
+            "precision": 0.482,
+            "n": 2463
+          }
+        },
+        "confusion": {
+          "below-MDR": {
+            "below-MDR": 44019,
+            "MDR": 1642,
+            "PreXDR": 1623,
+            "XDR": 781
+          },
+          "MDR": {
+            "below-MDR": 2437,
+            "MDR": 6401,
+            "PreXDR": 1243,
+            "XDR": 254
+          },
+          "PreXDR": {
+            "below-MDR": 1055,
+            "MDR": 353,
+            "PreXDR": 2904,
+            "XDR": 413
+          },
+          "XDR": {
+            "below-MDR": 822,
+            "MDR": 52,
+            "PreXDR": 241,
+            "XDR": 1348
+          }
+        }
+      },
+      "who_catalog": {
+        "overall": 0.835,
+        "balanced": 0.679,
+        "macro_f1": 0.666,
+        "by_tier": {
+          "below-MDR": {
+            "accuracy": 0.916,
+            "n": 48065
+          },
+          "MDR": {
+            "accuracy": 0.624,
+            "n": 10335
+          },
+          "PreXDR": {
+            "accuracy": 0.62,
+            "n": 4725
+          },
+          "XDR": {
+            "accuracy": 0.555,
+            "n": 2463
+          }
+        },
+        "rates": {
+          "below-MDR": {
+            "sensitivity": 0.916,
+            "specificity": 0.759,
+            "precision": 0.912,
+            "n": 48065
+          },
+          "MDR": {
+            "sensitivity": 0.624,
+            "specificity": 0.963,
+            "precision": 0.759,
+            "n": 10335
+          },
+          "PreXDR": {
+            "sensitivity": 0.62,
+            "specificity": 0.949,
+            "precision": 0.486,
+            "n": 4725
+          },
+          "XDR": {
+            "sensitivity": 0.555,
+            "specificity": 0.977,
+            "precision": 0.486,
+            "n": 2463
+          }
+        },
+        "confusion": {
+          "below-MDR": {
+            "below-MDR": 44019,
+            "MDR": 1643,
+            "PreXDR": 1622,
+            "XDR": 781
+          },
+          "MDR": {
+            "below-MDR": 2396,
+            "MDR": 6449,
+            "PreXDR": 1236,
+            "XDR": 254
+          },
+          "PreXDR": {
+            "below-MDR": 1028,
+            "MDR": 356,
+            "PreXDR": 2928,
+            "XDR": 413
+          },
+          "XDR": {
+            "below-MDR": 800,
+            "MDR": 53,
+            "PreXDR": 243,
+            "XDR": 1367
+          }
+        }
+      }
+    },
+    "agreement": {
+      "engine_catalog_match": 0.998,
+      "resistant_isolates": 17523,
+      "both_correct": 10646,
+      "both_wrong": 6772,
+      "engine_only_wrong": 98,
+      "catalog_only_wrong": 7,
+      "mcnemar": {
+        "chi2": 77.14,
+        "p_value": 1.5902873970263575e-18,
+        "discordant": 105
+      }
+    },
+    "engine_only_cases": [
+      {
+        "uniqueid": "site.03.subj.6422-17_LIB14359.lab.6422-17_LIB14359.iso.1",
+        "truth": "PreXDR",
+        "engine": "XDR",
+        "catalog": "PreXDR",
+        "resistant_drugs": [
+          "amikacin",
+          "ethambutol",
+          "ethionamide",
+          "isoniazid",
+          "kanamycin",
+          "levofloxacin",
+          "moxifloxacin",
+          "pyrazinamide",
+          "rifampin",
+          "streptomycin"
+        ],
+        "mutations": [
+          "NA_fabG1@L203L&fabG1@g609a",
+          "NA_fabG1@L203L&fabG1@g609a",
+          "eis_c-14t",
+          "eis_c-14t",
+          "embB_M306V",
+          "ethA_768_del_g",
+          "gyrA_D94G",
+          "gyrA_D94G",
+          "katG_S315T",
+          "pncA_V7G",
+          "rpoB_S450L",
+          "rrs_c517t"
+        ]
+      },
+      {
+        "uniqueid": "site.03.subj.BOR-6946-17.lab.6946-17.iso.1",
+        "truth": "PreXDR",
+        "engine": "XDR",
+        "catalog": "PreXDR",
+        "resistant_drugs": [
+          "amikacin",
+          "ethambutol",
+          "ethionamide",
+          "isoniazid",
+          "kanamycin",
+          "levofloxacin",
+          "moxifloxacin",
+          "pyrazinamide",
+          "rifampin",
+          "streptomycin"
+        ],
+        "mutations": [
+          "NA_fabG1@L203L&fabG1@g609a",
+          "NA_fabG1@L203L&fabG1@g609a",
+          "eis_c-14t",
+          "eis_c-14t",
+          "embB_M306V",
+          "ethA_768_del_g",
+          "gyrA_D94G",
+          "gyrA_D94G",
+          "katG_S315T",
+          "pncA_V7G",
+          "rpoB_S450L",
+          "rrs_c517t"
+        ]
+      },
+      {
+        "uniqueid": "site.03.subj.BUNK09011966.lab.NOR-55_LIB19764.iso.1",
+        "truth": "MDR",
+        "engine": "PreXDR",
+        "catalog": "MDR",
+        "resistant_drugs": [
+          "amikacin",
+          "ethambutol",
+          "isoniazid",
+          "kanamycin",
+          "rifampin",
+          "streptomycin"
+        ],
+        "mutations": [
+          "eis_c-14t",
+          "eis_c-14t",
+          "embB_M306V",
+          "katG_S315T",
+          "rpoB_S450F",
+          "rpsL_K43R"
+        ]
+      },
+      {
+        "uniqueid": "site.03.subj.BUVA19061975.lab.NOR-56_LIB19765.iso.1",
+        "truth": "MDR",
+        "engine": "PreXDR",
+        "catalog": "MDR",
+        "resistant_drugs": [
+          "amikacin",
+          "ethambutol",
+          "ethionamide",
+          "isoniazid",
+          "kanamycin",
+          "pyrazinamide",
+          "rifampin",
+          "streptomycin"
+        ],
+        "mutations": [
+          "NA_fabG1@L203L&fabG1@g609a",
+          "NA_fabG1@L203L&fabG1@g609a",
+          "eis_c-14t",
+          "eis_c-14t",
+          "embB_M306V",
+          "ethA_768_del_g",
+          "katG_S315T",
+          "pncA_T100P",
+          "rpoB_S450L",
+          "rrs_c517t"
+        ]
+      },
+      {
+        "uniqueid": "site.03.subj.ILAD28061954.lab.NOR-146_LIB20219.iso.1",
+        "truth": "MDR",
+        "engine": "PreXDR",
+        "catalog": "MDR",
+        "resistant_drugs": [
+          "amikacin",
+          "ethambutol",
+          "ethionamide",
+          "isoniazid",
+          "kanamycin",
+          "rifampin",
+          "streptomycin"
+        ],
+        "mutations": [
+          "NA_fabG1@L203L&fabG1@g609a",
+          "NA_fabG1@L203L&fabG1@g609a",
+          "eis_c-14t",
+          "eis_c-14t",
+          "embB_M306V",
+          "ethA_768_del_g",
+          "katG_S315T",
+          "rpoB_S450L",
+          "rrs_c517t"
+        ]
+      },
+      {
+        "uniqueid": "site.04.subj.01294.lab.725257.iso.1",
+        "truth": "PreXDR",
+        "engine": "XDR",
+        "catalog": "PreXDR",
+        "resistant_drugs": [
+          "isoniazid",
+          "kanamycin",
+          "levofloxacin",
+          "moxifloxacin",
+          "pyrazinamide",
+          "rifampin",
+          "streptomycin"
+        ],
+        "mutations": [
+          "eis_g-10a",
+          "gyrA_D94A",
+          "gyrA_D94A",
+          "katG_S315T",
+          "pncA_I5S",
+          "rpoB_S450L",
+          "rpsL_K43R"
+        ]
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0003.lab.06MIL0464.iso.1",
+        "truth": "XDR",
+        "engine": "below-MDR",
+        "catalog": "XDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0004.lab.06MIL0852.iso.1",
+        "truth": "XDR",
+        "engine": "below-MDR",
+        "catalog": "XDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0004.lab.06MIL0995.iso.1",
+        "truth": "XDR",
+        "engine": "below-MDR",
+        "catalog": "XDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0004.lab.06MIL0996.iso.1",
+        "truth": "XDR",
+        "engine": "below-MDR",
+        "catalog": "XDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0004.lab.06MIL0998.iso.1",
+        "truth": "XDR",
+        "engine": "below-MDR",
+        "catalog": "XDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0004.lab.06MIL1009.iso.1",
+        "truth": "XDR",
+        "engine": "below-MDR",
+        "catalog": "XDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0004.lab.06MIL1010.iso.1",
+        "truth": "XDR",
+        "engine": "below-MDR",
+        "catalog": "XDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0007.lab.06MIL0861.iso.1",
+        "truth": "XDR",
+        "engine": "below-MDR",
+        "catalog": "XDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0012.lab.06MIL0473.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0016.lab.06MIL0477.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0017.lab.06MIL0478.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0018.lab.06MIL0479.iso.1",
+        "truth": "PreXDR",
+        "engine": "below-MDR",
+        "catalog": "PreXDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0019.lab.06MIL0480.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0020.lab.06MIL0481.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0021.lab.06MIL0482.iso.1",
+        "truth": "PreXDR",
+        "engine": "below-MDR",
+        "catalog": "PreXDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0022.lab.06MIL0483.iso.1",
+        "truth": "PreXDR",
+        "engine": "below-MDR",
+        "catalog": "PreXDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0023.lab.06MIL0484.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0024.lab.06MIL0485.iso.1",
+        "truth": "PreXDR",
+        "engine": "below-MDR",
+        "catalog": "PreXDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0026.lab.06MIL0487.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0027.lab.06MIL0488.iso.1",
+        "truth": "XDR",
+        "engine": "below-MDR",
+        "catalog": "XDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0029.lab.06MIL0490.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0030.lab.06MIL0491.iso.1",
+        "truth": "XDR",
+        "engine": "below-MDR",
+        "catalog": "XDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0031.lab.06MIL0492.iso.1",
+        "truth": "XDR",
+        "engine": "below-MDR",
+        "catalog": "XDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0033.lab.06MIL0494.iso.1",
+        "truth": "PreXDR",
+        "engine": "below-MDR",
+        "catalog": "PreXDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0034.lab.06MIL0495.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0035.lab.06MIL0496.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0038.lab.06MIL0499.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0040.lab.06MIL0501.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0043.lab.06MIL0504.iso.1",
+        "truth": "PreXDR",
+        "engine": "below-MDR",
+        "catalog": "PreXDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0046.lab.06MIL0507.iso.1",
+        "truth": "XDR",
+        "engine": "below-MDR",
+        "catalog": "XDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0046.lab.06MIL0875.iso.1",
+        "truth": "XDR",
+        "engine": "below-MDR",
+        "catalog": "XDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0053.lab.06MIL0514.iso.1",
+        "truth": "XDR",
+        "engine": "below-MDR",
+        "catalog": "XDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0054.lab.06MIL0515.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0056.lab.06MIL0517.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0056.lab.06MIL0878.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0057.lab.06MIL0518.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0058.lab.06MIL0519.iso.1",
+        "truth": "PreXDR",
+        "engine": "below-MDR",
+        "catalog": "PreXDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0059.lab.06MIL0520.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0060.lab.06MIL0521.iso.1",
+        "truth": "XDR",
+        "engine": "below-MDR",
+        "catalog": "XDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0060.lab.06MIL0853.iso.1",
+        "truth": "XDR",
+        "engine": "below-MDR",
+        "catalog": "XDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0062.lab.06MIL0523.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0063.lab.06MIL0524.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0064.lab.06MIL0525.iso.1",
+        "truth": "XDR",
+        "engine": "below-MDR",
+        "catalog": "XDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0225.lab.06MIL0686.iso.1",
+        "truth": "PreXDR",
+        "engine": "below-MDR",
+        "catalog": "PreXDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0252.lab.06MIL0713.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0260.lab.06MIL0851.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0261.lab.06MIL0860.iso.1",
+        "truth": "XDR",
+        "engine": "below-MDR",
+        "catalog": "XDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0263.lab.06MIL0854.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0264.lab.06MIL0855.iso.1",
+        "truth": "XDR",
+        "engine": "below-MDR",
+        "catalog": "XDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0265.lab.06MIL0856.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0267.lab.06MIL0858.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0271.lab.06MIL0862.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0272.lab.06MIL0863.iso.1",
+        "truth": "PreXDR",
+        "engine": "below-MDR",
+        "catalog": "PreXDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0273.lab.06MIL0864.iso.1",
+        "truth": "PreXDR",
+        "engine": "below-MDR",
+        "catalog": "PreXDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0274.lab.06MIL0865.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0275.lab.06MIL0866.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0276.lab.06MIL0867.iso.1",
+        "truth": "PreXDR",
+        "engine": "below-MDR",
+        "catalog": "PreXDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0277.lab.06MIL0868.iso.1",
+        "truth": "XDR",
+        "engine": "below-MDR",
+        "catalog": "XDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0278.lab.06MIL0869.iso.1",
+        "truth": "PreXDR",
+        "engine": "below-MDR",
+        "catalog": "PreXDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0279.lab.06MIL0870.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0286.lab.06MIL0877.iso.1",
+        "truth": "PreXDR",
+        "engine": "below-MDR",
+        "catalog": "PreXDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0290.lab.06MIL0881.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0291.lab.06MIL0882.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0293.lab.06MIL0884.iso.1",
+        "truth": "PreXDR",
+        "engine": "below-MDR",
+        "catalog": "PreXDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_0861.lab.06MIL1809.iso.1",
+        "truth": "MDR",
+        "engine": "PreXDR",
+        "catalog": "MDR",
+        "resistant_drugs": [
+          "amikacin",
+          "ethambutol",
+          "ethionamide",
+          "isoniazid",
+          "kanamycin",
+          "rifampin",
+          "streptomycin"
+        ],
+        "mutations": [
+          "NA_fabG1@L203L&fabG1@g609a",
+          "NA_fabG1@L203L&fabG1@g609a",
+          "eis_c-14t",
+          "eis_c-14t",
+          "embB_G406A",
+          "ethA_768_del_g",
+          "katG_S315T",
+          "rpoB_S450L",
+          "rrs_c517t"
+        ]
+      },
+      {
+        "uniqueid": "site.06.subj.06TB_1082.lab.06MIL2202.iso.1",
+        "truth": "MDR",
+        "engine": "PreXDR",
+        "catalog": "MDR",
+        "resistant_drugs": [
+          "amikacin",
+          "ethambutol",
+          "ethionamide",
+          "isoniazid",
+          "kanamycin",
+          "rifampin",
+          "streptomycin"
+        ],
+        "mutations": [
+          "NA_fabG1@L203L&fabG1@g609a",
+          "NA_fabG1@L203L&fabG1@g609a",
+          "eis_c-14t",
+          "eis_c-14t",
+          "embB_M306V",
+          "ethA_768_del_g",
+          "katG_S315T",
+          "rpoB_S450L",
+          "rrs_c517t"
+        ]
+      },
+      {
+        "uniqueid": "site.06.subj.13348.lab.06MIL2173.iso.1",
+        "truth": "MDR",
+        "engine": "PreXDR",
+        "catalog": "MDR",
+        "resistant_drugs": [
+          "amikacin",
+          "ethambutol",
+          "ethionamide",
+          "isoniazid",
+          "kanamycin",
+          "pyrazinamide",
+          "rifampin",
+          "streptomycin"
+        ],
+        "mutations": [
+          "NA_fabG1@L203L&fabG1@g609a",
+          "NA_fabG1@L203L&fabG1@g609a",
+          "eis_c-14t",
+          "eis_c-14t",
+          "embB_M306V",
+          "ethA_768_del_g",
+          "katG_S315T",
+          "pncA_P62L",
+          "rpoB_S450L",
+          "rrs_c517t"
+        ]
+      },
+      {
+        "uniqueid": "site.06.subj.ATH_0058-14.lab.06MIL0848.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.IR28.lab.06MIL1852.iso.1",
+        "truth": "MDR",
+        "engine": "PreXDR",
+        "catalog": "MDR",
+        "resistant_drugs": [
+          "amikacin",
+          "ethambutol",
+          "ethionamide",
+          "isoniazid",
+          "kanamycin",
+          "pyrazinamide",
+          "rifampin",
+          "streptomycin"
+        ],
+        "mutations": [
+          "eis_c-14t",
+          "eis_c-14t",
+          "embB_G406D",
+          "embB_M306I",
+          "ethA_110_del_a",
+          "katG_S315T",
+          "pncA_A102P",
+          "rpoB_S450L",
+          "rrs_c517t"
+        ]
+      },
+      {
+        "uniqueid": "site.06.subj.MHL_0151-14.lab.06MIL0847.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.MHL_0241-14.lab.06MIL0460.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.MHL_0242-14.lab.06MIL0449.iso.1",
+        "truth": "PreXDR",
+        "engine": "below-MDR",
+        "catalog": "PreXDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.NHM_0298-14.lab.06MIL0454.iso.1",
+        "truth": "PreXDR",
+        "engine": "below-MDR",
+        "catalog": "PreXDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.NHM_0323-14.lab.06MIL0452.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.RLH_0332-14.lab.06MIL0451.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.SGD_0046-14.lab.06MIL0850.iso.1",
+        "truth": "PreXDR",
+        "engine": "below-MDR",
+        "catalog": "PreXDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.SKT_0005-14.lab.06MIL0457.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.06.subj.SKT_0006-14.lab.06MIL0458.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.07.subj.FD_127_369.lab.15_0602905.iso.1",
+        "truth": "PreXDR",
+        "engine": "below-MDR",
+        "catalog": "PreXDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.11.subj.XTB_18-050.lab.XTB_18-050.iso.1",
+        "truth": "PreXDR",
+        "engine": "XDR",
+        "catalog": "PreXDR",
+        "resistant_drugs": [
+          "amikacin",
+          "ethambutol",
+          "ethionamide",
+          "isoniazid",
+          "kanamycin",
+          "levofloxacin",
+          "moxifloxacin",
+          "pyrazinamide",
+          "rifampin",
+          "streptomycin"
+        ],
+        "mutations": [
+          "NA_fabG1@L203L&fabG1@g609a",
+          "NA_fabG1@L203L&fabG1@g609a",
+          "eis_c-14t",
+          "eis_c-14t",
+          "embB_M306V",
+          "ethA_768_del_g",
+          "gyrA_A90V",
+          "gyrA_A90V",
+          "katG_S315T",
+          "pncA_D12G",
+          "rpoB_S450L",
+          "rrs_c517t"
+        ]
+      },
+      {
+        "uniqueid": "site.ENA.subj.ERR7910948.lab.1.iso.1",
+        "truth": "MDR",
+        "engine": "PreXDR",
+        "catalog": "MDR",
+        "resistant_drugs": [
+          "amikacin",
+          "ethambutol",
+          "ethionamide",
+          "isoniazid",
+          "kanamycin",
+          "pyrazinamide",
+          "rifampin",
+          "streptomycin"
+        ],
+        "mutations": [
+          "NA_fabG1@L203L&fabG1@g609a",
+          "NA_fabG1@L203L&fabG1@g609a",
+          "eis_c-14t",
+          "eis_c-14t",
+          "embB_M306V",
+          "ethA_768_del_g",
+          "katG_S315T",
+          "pncA_59_ins_t",
+          "rpoB_S450L",
+          "rrs_c517t"
+        ]
+      },
+      {
+        "uniqueid": "site.ENA.subj.ERR7910961.lab.1.iso.1",
+        "truth": "MDR",
+        "engine": "PreXDR",
+        "catalog": "MDR",
+        "resistant_drugs": [
+          "amikacin",
+          "ethambutol",
+          "ethionamide",
+          "isoniazid",
+          "kanamycin",
+          "rifampin",
+          "streptomycin"
+        ],
+        "mutations": [
+          "NA_fabG1@L203L&fabG1@g609a",
+          "NA_fabG1@L203L&fabG1@g609a",
+          "eis_c-14t",
+          "eis_c-14t",
+          "embB_M306V",
+          "ethA_768_del_g",
+          "katG_S315T",
+          "rpoB_S450L",
+          "rrs_c517t"
+        ]
+      },
+      {
+        "uniqueid": "site.ENA.subj.ERR7911087.lab.1.iso.1",
+        "truth": "MDR",
+        "engine": "PreXDR",
+        "catalog": "MDR",
+        "resistant_drugs": [
+          "amikacin",
+          "ethambutol",
+          "isoniazid",
+          "kanamycin",
+          "rifampin",
+          "streptomycin"
+        ],
+        "mutations": [
+          "eis_c-14t",
+          "eis_c-14t",
+          "embB_M306V",
+          "katG_S315T",
+          "rpoB_S450F",
+          "rpsL_K43R"
+        ]
+      },
+      {
+        "uniqueid": "site.ENA.subj.ERR7911748.lab.1.iso.1",
+        "truth": "MDR",
+        "engine": "PreXDR",
+        "catalog": "MDR",
+        "resistant_drugs": [
+          "amikacin",
+          "ethambutol",
+          "ethionamide",
+          "isoniazid",
+          "kanamycin",
+          "rifampin",
+          "streptomycin"
+        ],
+        "mutations": [
+          "NA_fabG1@L203L&fabG1@g609a",
+          "NA_fabG1@L203L&fabG1@g609a",
+          "eis_c-14t",
+          "eis_c-14t",
+          "embB_G406A",
+          "ethA_768_del_g",
+          "katG_S315T",
+          "rpoB_S450L",
+          "rrs_c517t"
+        ]
+      },
+      {
+        "uniqueid": "site.ENA.subj.SAMEA1016163.lab.1.iso.1",
+        "truth": "PreXDR",
+        "engine": "below-MDR",
+        "catalog": "PreXDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.ENA.subj.SAMEA104172471.lab.1.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.ENA.subj.SAMEA1403638.lab.1.iso.1",
+        "truth": "PreXDR",
+        "engine": "XDR",
+        "catalog": "PreXDR",
+        "resistant_drugs": [
+          "amikacin",
+          "ethambutol",
+          "ethionamide",
+          "isoniazid",
+          "kanamycin",
+          "levofloxacin",
+          "moxifloxacin",
+          "pyrazinamide",
+          "rifampin",
+          "streptomycin"
+        ],
+        "mutations": [
+          "NA_fabG1@L203L&fabG1@g609a",
+          "NA_fabG1@L203L&fabG1@g609a",
+          "eis_c-14t",
+          "eis_c-14t",
+          "embB_M306V",
+          "ethA_768_del_g",
+          "gyrA_A90V:21",
+          "gyrA_A90V:21",
+          "gyrA_D94G:61",
+          "gyrA_D94G:61",
+          "katG_S315T",
+          "pncA_a-11c",
+          "rpoB_S450L",
+          "rrs_c517t"
+        ]
+      },
+      {
+        "uniqueid": "site.ENA.subj.SAMEA1403685.lab.1.iso.1",
+        "truth": "MDR",
+        "engine": "PreXDR",
+        "catalog": "MDR",
+        "resistant_drugs": [
+          "amikacin",
+          "ethambutol",
+          "ethionamide",
+          "isoniazid",
+          "kanamycin",
+          "pyrazinamide",
+          "rifampin",
+          "streptomycin"
+        ],
+        "mutations": [
+          "NA_fabG1@L203L&fabG1@g609a",
+          "NA_fabG1@L203L&fabG1@g609a",
+          "eis_c-14t",
+          "eis_c-14t",
+          "embB_M306V",
+          "ethA_768_del_g",
+          "katG_S315T",
+          "pncA_V155G",
+          "rpoB_S450L",
+          "rrs_c517t"
+        ]
+      },
+      {
+        "uniqueid": "site.ENA.subj.SAMN01908756.lab.1.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.ENA.subj.SAMN03648042.lab.1.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.ENA.subj.SAMN07236398.lab.1.iso.1",
+        "truth": "MDR",
+        "engine": "below-MDR",
+        "catalog": "MDR",
+        "resistant_drugs": [],
+        "mutations": []
+      },
+      {
+        "uniqueid": "site.ENA.subj.SRR6832362.lab.1.iso.1",
+        "truth": "MDR",
+        "engine": "PreXDR",
+        "catalog": "MDR",
+        "resistant_drugs": [
+          "amikacin",
+          "ethambutol",
+          "ethionamide",
+          "isoniazid",
+          "kanamycin",
+          "pyrazinamide",
+          "rifampin",
+          "streptomycin"
+        ],
+        "mutations": [
+          "eis_c-14t",
+          "eis_c-14t",
+          "embB_Y319C",
+          "ethA_Y140!",
+          "katG_S315T",
+          "pncA_L85P",
+          "rpoB_S450L",
+          "rpsL_K43R"
+        ]
+      }
+    ]
+  }
+}

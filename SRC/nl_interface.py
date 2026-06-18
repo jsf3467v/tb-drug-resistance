@@ -1,22 +1,27 @@
+import anthropic
 from anthropic import Anthropic
 import json
 import os
 import re
 import time
-from config import SCHEMA, EXAMPLES
+from config import SCHEMA, EXAMPLES, DRUG_ALIASES
 from rule_engine import RuleEngine
 from cbr_engine import CBREngine, CaseStore
 
-MODEL = "claude-sonnet-4-20250514"
+MODEL = "claude-sonnet-4-6"
 REQUEST_TIMEOUT = 30.0
 MAX_RETRIES = 4
 BACKOFF_BASE = 0.5
 
-# Write clauses the read-only interface must reject. Matched on word boundaries
-# so identifiers that merely contain a keyword (created, asset, offset) are not
+# Creating clauses the read-only interface must reject. Matched on word boundaries
+# so identifiers that contain a keyword (created, asset, offset) are not
 # mistaken for the clause itself.
 WRITE_KEYWORDS = ('DELETE', 'DETACH', 'DROP', 'CREATE', 'MERGE', 'SET', 'REMOVE')
 WRITE_PATTERN = re.compile(r'\b(' + '|'.join(WRITE_KEYWORDS) + r')\b')
+
+# Read clauses a generated query may open with. The write deny-list above is the
+# real guard, so this only rejects a query that opens with nothing recognizable.
+READ_STARTS = ('MATCH', 'OPTIONAL MATCH', 'WITH', 'UNWIND')
 
 LIST_PHRASES = ('show all', 'list all', 'show mdr')
 TREATMENT_KEYWORDS = (
@@ -30,10 +35,10 @@ CLASSIFY_WORDS = ('classification', 'classify', 'profile', 'type')
 RISK_KEYWORDS = ('risk', 'likely', 'probability', 'chance', 'predict')
 
 _RETRYABLE = tuple(c for c in (
-    getattr(__import__('anthropic'), 'APIConnectionError', None),
-    getattr(__import__('anthropic'), 'APITimeoutError', None),
-    getattr(__import__('anthropic'), 'RateLimitError', None),
-    getattr(__import__('anthropic'), 'InternalServerError', None),
+    getattr(anthropic, 'APIConnectionError', None),
+    getattr(anthropic, 'APITimeoutError', None),
+    getattr(anthropic, 'RateLimitError', None),
+    getattr(anthropic, 'InternalServerError', None),
 ) if c is not None) or (Exception,)
 
 
@@ -48,6 +53,39 @@ def first_text(message):
         if getattr(block, "type", None) == "text":
             return block.text
     return ""
+
+
+def canonical_drugs(cypher):
+    """Rewrite known drug-name variants in a query to the catalog spelling."""
+    for variant, canonical in DRUG_ALIASES.items():
+        for quote in ("'", '"'):
+            cypher = cypher.replace(quote + variant + quote, quote + canonical + quote)
+    return cypher
+
+
+def unquoted(cypher):
+    """Query with single and double quoted spans removed, so a delimiter inside a
+    string literal does not count toward the parenthesis and bracket balance."""
+    return re.sub(r"'[^']*'|\"[^\"]*\"", "", cypher)
+
+
+AGGREGATES = ('collect(', 'count(', 'sum(', 'avg(', 'min(', 'max(')
+
+
+def runnable_cypher(cypher):
+    """Remove a trailing ORDER BY that sorts on a raw variable when the RETURN
+    aggregates. Memgraph keeps only the projected aliases in scope after an
+    aggregate, so a key like s.year is unbound and the query fails to run. Order
+    never changes the result set, so dropping the clause is answer preserving."""
+    low = cypher.lower()
+    if not any(agg in low for agg in AGGREGATES):
+        return cypher
+    cut = low.rfind('order by')
+    if cut == -1 or '.' not in cypher[cut:]:
+        return cypher
+    limit = low.find('limit', cut)
+    tail = ' ' + cypher[limit:].strip() if limit != -1 else ''
+    return (cypher[:cut].rstrip() + tail).rstrip()
 
 
 class NLInterface:
@@ -89,7 +127,7 @@ class NLInterface:
     def generate_cypher(self, user_question):
         user_question = user_question.rstrip('.?!,;')
         cypher = self._complete(self._cypher_prompt(user_question), max_tokens=1024, temperature=0)
-        return self._strip_fences(cypher)
+        return runnable_cypher(canonical_drugs(self._strip_fences(cypher)))
 
     def _cypher_prompt(self, user_question):
         return f"""You are a Cypher query expert for a TB drug resistance database.
@@ -104,10 +142,11 @@ RULES:
 1. Return ONLY valid Cypher syntax
 2. No explanations, no markdown, no code blocks
 3. Use exact property names from schema
-4. Use parameterized queries where appropriate
+4. Inline literal values directly; do not use $parameter placeholders
 5. Include ORDER BY for readable results
 6. If question is impossible to answer, return: UNANSWERABLE: [reason]
 7. For patient treatment questions, ALWAYS include patient_id in the RETURN clause
+8. When RETURN uses an aggregate such as collect() or count(), ORDER BY must reference the output aliases, not raw variables like s.year
 
 USER QUESTION: {user_question}
 
@@ -127,14 +166,14 @@ CYPHER QUERY:"""
         if match:
             return False, f"Query contains forbidden keyword: {match.group(1)}"
 
-        if not cypher.strip().upper().startswith('MATCH'):
-            if 'UNANSWERABLE' not in cypher:
-                return False, "Query must start with MATCH"
+        if not cypher.strip().upper().startswith(READ_STARTS) and 'UNANSWERABLE' not in cypher:
+            return False, "Query must start with a read clause"
 
-        if cypher.count('(') != cypher.count(')'):
+        bare = unquoted(cypher)
+        if bare.count('(') != bare.count(')'):
             return False, "Unbalanced parentheses"
 
-        if cypher.count('[') != cypher.count(']'):
+        if bare.count('[') != bare.count(']'):
             return False, "Unbalanced brackets"
 
         return True, None
@@ -150,7 +189,7 @@ CYPHER QUERY:"""
         if any(p in q for p in LIST_PHRASES):
             return False
 
-        has_id = bool(re.search(r'TB\d{3}', question) or re.search(r'P\d{3}', question))
+        has_id = bool(re.search(r'TB\d{3}\b', question) or re.search(r'P\d{3}\b', question))
 
         if has_id and any(kw in q for kw in TREATMENT_KEYWORDS):
             return 'treatment'
@@ -158,9 +197,9 @@ CYPHER QUERY:"""
             return 'classification'
         if has_id and any(kw in q for kw in RISK_KEYWORDS):
             return 'classification'
-        if re.search(r'TB\d{3}', question):
+        if re.search(r'TB\d{3}\b', question):
             return 'classification'
-        if re.search(r'P\d{3}', question):
+        if re.search(r'P\d{3}\b', question):
             return 'treatment'
         return False
 
@@ -183,11 +222,11 @@ CYPHER QUERY:"""
 
     def strain_from_question(self):
         """Extract strain ID from question text"""
-        match = re.search(r'TB\d{3}', self.last_question)
+        match = re.search(r'TB\d{3}\b', self.last_question)
         if match:
             return match.group()
 
-        match = re.search(r'P\d{3}', self.last_question)
+        match = re.search(r'P\d{3}\b', self.last_question)
         if match:
             return self.strain_from_patient(match.group())
 
@@ -259,7 +298,7 @@ CYPHER QUERY:"""
         return {
             'strain': strain_id,
             'recommendations': result['recommendations'],
-            'who_confidence': result['who_confidence'],
+            'canonical_gene_fraction': result['canonical_gene_fraction'],
             'rules_fired': result['rules_fired']
         }
 
@@ -281,7 +320,7 @@ CYPHER QUERY:"""
 
     def patient_from_question(self):
         """Extract patient ID from question text"""
-        match = re.search(r'P\d{3}', self.last_question)
+        match = re.search(r'P\d{3}\b', self.last_question)
         return match.group() if match else None
 
     def patient_data_query(self, patient_id):
@@ -393,7 +432,7 @@ CYPHER QUERY:"""
 
 EXPERT SYSTEM ANALYSIS:
 Strain: {rule_output['strain']}
-Evidence Confidence: {rule_output['who_confidence']}
+Canonical Gene Fraction: {rule_output['canonical_gene_fraction']}
 Rules Applied: {', '.join(rule_output['rules_fired'])}
 
 {formatted}

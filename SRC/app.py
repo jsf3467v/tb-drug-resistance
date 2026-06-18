@@ -1,5 +1,4 @@
 import streamlit as st
-import os
 from dataclasses import dataclass
 from tb_ontology import TBOntology
 from nl_interface import NLInterface, LLMUnavailable
@@ -84,7 +83,7 @@ def _rule_metrics(rule_output):
     col1, col2 = st.columns(2)
 
     with col1:
-        st.metric("Evidence Confidence", f"{rule_output['who_confidence']:.0%}")
+        st.metric("Canonical Gene Fraction", f"{rule_output['canonical_gene_fraction']:.0%}")
         st.metric("Rules Applied", len(rule_output['rules_fired']))
 
     with col2:
@@ -99,6 +98,8 @@ def _rule_recommendations(recs):
         st.write("**Classifications:**")
         for c in recs['classifications']:
             st.write(f"- {c['type']} (Rule: {c['rule']}, Source: {c['source']})")
+    else:
+        st.write("No MDR-class resistance detected (below-MDR).")
 
     if recs.get('regimens'):
         st.write("**Treatment Regimens:**")

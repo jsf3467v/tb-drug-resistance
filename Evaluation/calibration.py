@@ -1,9 +1,5 @@
 """Temperature-scaling math for post-hoc probability calibration.
 
-Used by validation.py and the test suite, not the live engine. The
-scaling is tested and rejected (it raises ECE) and the raw probability is
-reported; see the README for the rationale.
-
     p_scaled = sigmoid(logit(p) / T)
 
 T > 1 softens over-confident scores toward 0.5; T < 1 sharpens them; T is

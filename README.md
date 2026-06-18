@@ -28,9 +28,9 @@ engage with the data's quality and constraints, rather than developing a clinica
 
 ## Overview
 
-Drug-resistant tuberculosis demands reasoning that is both auditable and grounded in current evidence. This system pairs an explicit symbolic layer, where 
-every resistance classification can be traced to a WHO catalog rule, with a case-based layer that draws on prior patient experience where guidelines are silent. 
-A natural-language interface translates plain-English questions into graph queries under a read-only guard, and a Streamlit front end exposes the full reasoning trace.
+Drug-resistant tuberculosis demands reasoning that is both auditable and grounded in current evidence. This system pairs an explicit symbolic layer, where every resistance classification can 
+be traced to a WHO catalog rule, with a case-based layer that draws on prior patient experience where guidelines are silent. A natural-language interface translates plain-English questions 
+into graph queries under a read-only guard, and a Streamlit front end exposes the full reasoning trace.
 
 The project is presented as a portfolio piece rather than a deployable clinical tool. Its thesis is honest, rigorously evaluated engineering, with the synthetic patient layer and the 
 genotype-phenotype prediction ceiling treated as measured limits rather than hidden ones.

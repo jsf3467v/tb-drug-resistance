@@ -1,12 +1,6 @@
-"""
-Enhanced Validation Framework for TB Hybrid AI System
-
-Features:
-- K-fold cross-validation for CBR
-- Bootstrap confidence intervals
-- Expected Calibration Error (ECE)
-- Edge case testing for expert system
-"""
+"""Validation for the TB hybrid system, covering CBR cross-validation with bootstrap
+intervals and calibration, expert-system query translation against gold queries, and
+CRyPTIC classification."""
 
 import json
 import time
@@ -25,8 +19,7 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "SRC"))
 
 from calibration import fit_temperature, scaled_confidence
-
-load_dotenv()
+from metrics import balanced_accuracy, brier, class_rates, macro_f1, mcnemar
 
 
 # STATISTICS
@@ -146,12 +139,7 @@ def cbr_query(case):
 
 
 def neighbor_regimen_mode(similar_cases):
-    """Most frequent regimen among the retrieved neighbors, ties broken by name
-    for determinism. Unlike recommend()'s outcome-ranked choice, this ignores
-    success rate and just takes the modal neighbor regimen, so it tracks the
-    per-profile mode that the majority baseline also predicts. Reported as a
-    diagnostic and it separates 'the objective is mismatched' from 'retrieval is
-    weak' for the below-baseline regimen result."""
+    """Most frequent regimen among the retrieved neighbors, ties broken by name."""
     counts = Counter(case['regimen'] for _, case in similar_cases)
     if not counts:
         return None
@@ -229,11 +217,7 @@ def accuracy_with_ci(values, rng=None):
 
 
 def fold_temperatures(all_results):
-    """Per-fold temperature scaling of the predicted success probability, fit on the
-    other folds (leak-free). Retained only to document that post-hoc scaling was
-    tested and rejected: it raises ECE here, so the raw probability is reported.
-    Returns the fold temperatures and the pooled scaled (probability, actual) pairs.
-    """
+    """Per-fold leak-free temperature scaling, kept to document the rejected calibration that raises ECE."""
     fold_preds = [[(r['success_prob'], 1.0 if r['actual_success'] else 0.0) for r in fold]
                   for fold in all_results]
     temperatures = []
@@ -271,6 +255,7 @@ def aggregate_cbr_folds(all_results, k, seed=42):
         'baseline': baseline_accuracy(flat),
         'calibration': {
             'ece': expected_calibration_error(predictions),
+            'brier': brier(predictions),
             'ece_temperature_scaled': expected_calibration_error(calibrated),
             'temperature_mean': round(float(np.mean(temperatures)), 3),
             'temperature_per_fold': temperatures,
@@ -281,7 +266,6 @@ def aggregate_cbr_folds(all_results, k, seed=42):
 
 def validate_cbr(cases, k=5, seed=42):
     print(f"\nCBR {k}-Fold Cross-Validation")
-    print("-" * 50)
 
     splits = stratified_folds(cases, k, random.Random(seed))
     all_results = []
@@ -295,252 +279,159 @@ def validate_cbr(cases, k=5, seed=42):
 
 # EXPERT SYSTEM VALIDATION
 
-STANDARD_QUERIES = [
-    {'id': 1, 'question': 'What mutations cause rifampin resistance?',
-     'category': 'drug_resistance', 'expected_contains': ['rpoB', 'S450L'],
-     'min_results': 5, 'requires_rules': False},
-    {'id': 2, 'question': 'What drugs should be excluded for strain TB001?',
-     'category': 'treatment', 'expected_contains': ['rifampin', 'isoniazid'],
-     'min_results': 2, 'requires_rules': True, 'expected_classification': 'MDR',
-     'expected_rules': ['RC001']},
-    {'id': 3, 'question': 'Show all MDR strains',
-     'category': 'profile_search', 'expected_contains': ['TB001', 'TB006'],
-     'min_results': 7, 'requires_rules': False},
-    {'id': 4, 'question': 'What is the resistance classification of strain TB011?',
-     'category': 'classification', 'expected_contains': [], 'min_results': 1,
-     'requires_rules': True, 'expected_classification': 'XDR',
-     'expected_rules': ['RC001', 'RC002']},
-    {'id': 5, 'question': 'Which genes have the most resistance mutations?',
-     'category': 'statistical', 'expected_contains': ['rpoB', 'katG'],
-     'min_results': 3, 'requires_rules': False}
-]
+# The natural-language layer turns a question into Cypher. Each gold query is the
+# certified answer, and a generated query passes when it returns the same rows.
+# One scoring method covers every query, so they stay comparable, and the score
+# is conditional on the model that wrote the Cypher, recorded next to it.
 
-EDGE_CASE_QUERIES = [
-    {'id': 101, 'question': 'What is the classification of strain TB002?',
-     'category': 'edge_case', 'edge_type': 'mono_resistance',
-     'expected_contains': ['MonoResistant'], 'min_results': 1,
-     'requires_rules': True, 'expected_classification': 'MonoResistant'},
-    {'id': 102, 'question': 'Show rifampicin resistant strains',
-     'category': 'edge_case', 'edge_type': 'spelling_variation',
-     'expected_contains': ['rpoB'], 'min_results': 5, 'requires_rules': False},
-    {'id': 103, 'question': 'What about TB003?',
-     'category': 'edge_case', 'edge_type': 'ambiguous',
-     # Ambiguous NL: the model's interpretation legitimately varies run to
-     # run, so this case is measured and reported, not pass/fail gated.
-     'expected_contains': ['TB003'], 'min_results': 1, 'requires_rules': False,
-     'scored': False},
-    {'id': 104, 'question': 'Show MDR strains from India with gyrA mutations',
-     'category': 'edge_case', 'edge_type': 'multi_condition',
-     # The seed graph holds no MDR strain from India carrying a gyrA
-     # mutation, so the correct answer to this conjunction is empty. The
-     # test checks the model builds the constraint correctly, not that a
-     # strain is manufactured to satisfy it.
-     'expected_contains': [], 'min_results': 0, 'requires_rules': False},
-    {'id': 105, 'question': 'Which strains do NOT have rifampin resistance?',
-     'category': 'edge_case', 'edge_type': 'negation',
-     # Non-rifampin strains are the Mono/Poly/Susceptible classes, so the
-     # real test is that rifampin-resistant strains are excluded. These ids
-     # are rifampin-resistant (MDR/PreXDR/XDR) and must not appear.
-     'expected_contains': [], 'expected_absent': ['TB001', 'TB003', 'TB011'],
-     'min_results': 1, 'requires_rules': False},
-    {'id': 106, 'question': 'Classify strain TB015 resistance profile',
-     'category': 'edge_case', 'edge_type': 'borderline',
-     'expected_contains': ['PreXDR'], 'min_results': 1,
-     'requires_rules': True, 'expected_classification': 'PreXDR'},
-    {'id': 107, 'question': 'What resistance does mutation rpoB_X999Y confer?',
-     'category': 'edge_case', 'edge_type': 'unknown_mutation',
-     'expected_contains': [], 'min_results': 0, 'requires_rules': False},
-    {'id': 108, 'question': 'Show XDR strains from Antarctica',
-     'category': 'edge_case', 'edge_type': 'no_results',
-     'expected_contains': [], 'min_results': 0, 'requires_rules': False}
+EXPERT_QUERIES = [
+    {'id': 1, 'category': 'lookup',
+     'question': 'What mutations cause rifampin resistance?',
+     'gold': "MATCH (m:Mutation)-[:CONFERS_RESISTANCE]->(:Drug {name: 'rifampin'}) "
+             "RETURN DISTINCT m.mutation_id AS mutation ORDER BY mutation"},
+    {'id': 2, 'category': 'lookup',
+     'question': 'What drugs is strain TB001 resistant to?',
+     'gold': "MATCH (:Strain {strain_id: 'TB001'})-[:HAS_MUTATION]->(:Mutation)"
+             "-[:CONFERS_RESISTANCE]->(d:Drug) RETURN DISTINCT d.name AS drug ORDER BY drug"},
+    {'id': 3, 'category': 'filter',
+     'question': 'Show all MDR strains',
+     'gold': "MATCH (s:Strain)-[:HAS_PROFILE]->(:ResistanceProfile {type: 'MDR'}) "
+             "RETURN s.strain_id AS strain ORDER BY strain"},
+    {'id': 4, 'category': 'aggregation',
+     'question': 'How many resistance mutations does each gene have?',
+     'gold': "MATCH (m:Mutation)-[:CONFERS_RESISTANCE]->(:Drug) "
+             "MATCH (m)-[:IN_GENE]->(g:Gene) "
+             "RETURN g.name AS gene, count(DISTINCT m) AS mutations ORDER BY gene"},
+    {'id': 5, 'category': 'spelling',
+     'question': 'Show rifampicin resistant strains',
+     'gold': "MATCH (s:Strain)-[:HAS_MUTATION]->(:Mutation)"
+             "-[:CONFERS_RESISTANCE]->(:Drug {name: 'rifampin'}) "
+             "RETURN DISTINCT s.strain_id AS strain ORDER BY strain"},
+    {'id': 6, 'category': 'negation',
+     'question': 'Which strains do not have rifampin resistance?',
+     'gold': "MATCH (s:Strain) WHERE NOT (s)-[:HAS_MUTATION]->(:Mutation)"
+             "-[:CONFERS_RESISTANCE]->(:Drug {name: 'rifampin'}) "
+             "RETURN s.strain_id AS strain ORDER BY strain"},
+    {'id': 7, 'category': 'conjunction',
+     'question': 'Show MDR strains from India with gyrA mutations',
+     'gold': "MATCH (s:Strain)-[:HAS_PROFILE]->(:ResistanceProfile {type: 'MDR'}) "
+             "WHERE s.country = 'India' AND (s)-[:HAS_MUTATION]->(:Mutation)"
+             "-[:IN_GENE]->(:Gene {name: 'gyrA'}) RETURN s.strain_id AS strain"},
+    {'id': 8, 'category': 'unknown_entity',
+     'question': 'What resistance does mutation rpoB_X999Y confer?',
+     'gold': "MATCH (:Mutation {mutation_id: 'rpoB_X999Y'})"
+             "-[:CONFERS_RESISTANCE]->(d:Drug) RETURN d.name AS drug"},
+    {'id': 9, 'category': 'no_results',
+     'question': 'Show XDR strains from Antarctica',
+     'gold': "MATCH (s:Strain)-[:HAS_PROFILE]->(:ResistanceProfile {type: 'XDR'}) "
+             "WHERE s.country = 'Antarctica' RETURN s.strain_id AS strain"},
+    {'id': 10, 'category': 'unanswerable',
+     'question': 'Change strain TB001 to susceptible', 'unanswerable': True},
+    {'id': 11, 'category': 'unanswerable',
+     'question': 'What is the home address of patient P001?', 'unanswerable': True},
 ]
 
 
-def standard_queries():
-    return STANDARD_QUERIES
+def expert_queries():
+    return EXPERT_QUERIES
 
 
-def edge_case_queries():
-    return EDGE_CASE_QUERIES
+def row_values(row):
+    """Canonical value set of one result row, free of column order and name."""
+    return frozenset(json.dumps(v, sort_keys=True, default=str) for v in row.values())
 
 
-def evaluate_query(test, nl_interface):
-    start = time.time()
-
-    try:
-        cypher = nl_interface.generate_cypher(test['question'])
-        is_valid, _ = nl_interface.validate_cypher(cypher)
-        no_results_expected = test.get('min_results', 1) == 0
-
-        if not is_valid or "UNANSWERABLE" in cypher:
-            return _rejected_result(test, no_results_expected, start)
-
-        results = nl_interface.execute_query(cypher)
-        return _scored_result(test, results, no_results_expected, nl_interface, start)
-
-    except Exception as e:
-        return query_result(test, False, 0.0, 0, time.time() - start, [], str(e))
+def covers(gold, produced):
+    """True when each gold row's values sit inside a distinct produced row."""
+    pool = [row_values(r) for r in produced]
+    for want in sorted((row_values(r) for r in gold), key=len, reverse=True):
+        match = next((i for i, have in enumerate(pool) if want <= have), None)
+        if match is None:
+            return False
+        pool.pop(match)
+    return True
 
 
-def _rejected_result(test, no_results_expected, start):
-    # An explicit unanswerable/invalid query is correct only when no rows are
-    # expected; otherwise the query genuinely failed.
-    return query_result(test, no_results_expected,
-                        1.0 if no_results_expected else 0.0,
-                        0, time.time() - start, [],
-                        None if no_results_expected else "Query failed")
+def same_answer(gold, produced):
+    """True when produced returns the gold rows, with extra columns allowed."""
+    return len(gold) == len(produced) and covers(gold, produced)
 
 
-def _scored_result(test, results, no_results_expected, nl_interface, start):
-    elapsed = time.time() - start
-
-    if no_results_expected:
-        # A valid query whose correct answer is empty passes; one that
-        # wrongly returns rows fails.
-        empty = len(results) == 0
-        return query_result(test, empty, 1.0 if empty else 0.0,
-                            len(results), elapsed, [],
-                            None if empty else f"Expected none, got {len(results)}")
-
-    if len(results) < test.get('min_results', 1):
-        return query_result(test, False, 0.0, len(results), elapsed, [],
-                            f"Insufficient: {len(results)}")
-
-    passed, confidence, rules = check_query_results(test, results, nl_interface)
-    return query_result(test, passed, confidence, len(results), elapsed, rules)
-
-
-def query_check_type(test):
-    """The verification a query's pass actually rests on, so the headline rate
-    can be read by strength of evidence rather than as one flat number:
-      classification - exact match against the rule engine's predicted profile
-      empty_expected - passes only if the query correctly returns no rows
-      absence        - forbidden ids must not appear (negation)
-      content_match  - substring containment of expected tokens (weakest)"""
-    if test.get('expected_classification'):
-        return 'classification'
-    if test.get('min_results', 1) == 0:
-        return 'empty_expected'
-    if test.get('expected_absent'):
-        return 'absence'
-    return 'content_match'
-
-
-def query_result(test, passed, confidence, count, elapsed, rules, failure=None):
+def query_result(item, passed, count, start, failure=None, detail=None):
     result = {
-        'id': test['id'],
-        'category': test['category'],
-        'edge_type': test.get('edge_type'),
-        'check_type': query_check_type(test),
+        'id': item['id'],
+        'category': item['category'],
         'passed': passed,
-        'confidence': confidence,
         'result_count': count,
-        'time_ms': round(elapsed * 1000, 1),
-        'rules_fired': rules,
-        'scored': test.get('scored', True)
+        'time_ms': round((time.perf_counter() - start) * 1000, 1),
     }
     if failure:
         result['failure'] = failure
+    if detail:
+        result.update(detail)
     return result
 
 
-def check_query_results(test, results, nl_interface):
-    results_str = str(results).lower()
+def evaluate_query(item, nl_interface):
+    """Score one query by matching its result set against the gold query."""
+    start = time.perf_counter()
+    cypher = nl_interface.generate_cypher(item['question'])
+    valid, _ = nl_interface.validate_cypher(cypher)
+    refused = (not valid) or 'UNANSWERABLE' in cypher
 
-    if _absent_violation(test, results_str):
-        return False, 0.0, []
+    if item.get('unanswerable'):
+        return query_result(item, refused, 0, start,
+                            None if refused else 'answered an unanswerable question',
+                            None if refused else {'cypher': cypher})
+    if refused:
+        return query_result(item, False, 0, start, 'rejected a valid question', {'cypher': cypher})
 
-    confidence = _content_confidence(test, results, results_str)
-    passed = confidence >= 0.5
-
-    if test.get('requires_rules'):
-        return _rule_check(test, results, nl_interface, passed, confidence)
-
-    return passed, confidence, []
-
-
-def _absent_violation(test, results_str):
-    absent = test.get('expected_absent')
-    return bool(absent) and any(str(item).lower() in results_str for item in absent)
-
-
-def _content_confidence(test, results, results_str):
-    expected = test.get('expected_contains')
-    if expected:
-        matched = sum(1 for item in expected if str(item).lower() in results_str)
-        return matched / len(expected)
-    return 1.0 if results else 0.0
+    try:
+        produced = nl_interface.execute_query(cypher)
+        expected = nl_interface.execute_query(item['gold'])
+    except Exception as exc:
+        return query_result(item, False, 0, start, str(exc), {'cypher': cypher})
+    passed = same_answer(expected, produced)
+    detail = None if passed else {'cypher': cypher, 'expected_count': len(expected)}
+    return query_result(item, passed, len(produced), start,
+                        None if passed else 'result set differs from gold', detail)
 
 
-def _rule_check(test, results, nl_interface, passed, confidence):
-    rules = []
-    nl_interface.last_question = test['question']
-    qtype = nl_interface.needs_rules(test['question'])
+def category_rates(results):
+    groups = defaultdict(lambda: [0, 0])
+    for r in results:
+        tally = groups[r['category']]
+        tally[0] += bool(r['passed'])
+        tally[1] += 1
+    return {name: {'rate': round(hit / total, 3), 'n': total}
+            for name, (hit, total) in groups.items()}
 
-    if qtype:
-        output = nl_interface.rule_recommend(results, qtype)
-        if output:
-            rules = output.get('rules_fired', [])
-            classifications = output['recommendations'].get('classifications', [])
 
-            if test.get('expected_classification') and classifications:
-                predicted = classifications[0]['type']
-                passed = predicted == test['expected_classification']
-                confidence = 1.0 if passed else 0.5
-
-    return passed, confidence, rules
+def expert_accuracy(results):
+    """Overall and per-category accuracy, tagged with the model that produced it."""
+    from nl_interface import MODEL
+    total = len(results)
+    hits = sum(r['passed'] for r in results)
+    return {
+        'model': MODEL,
+        'method': 'execution match of generated Cypher against a gold query',
+        'overall': {'rate': round(hits / total, 3) if total else 0.0, 'n': total},
+        'by_category': category_rates(results),
+        'failures': [r for r in results if not r['passed']],
+    }
 
 
 def validate_expert_system(nl_interface):
     print("\nExpert System Validation")
-    print("-" * 50)
-
-    tests = standard_queries() + edge_case_queries()
     results = []
-
-    for test in tests:
-        result = evaluate_query(test, nl_interface)
+    for item in EXPERT_QUERIES:
+        try:
+            result = evaluate_query(item, nl_interface)
+        except Exception as exc:
+            result = query_result(item, False, 0, time.perf_counter(), str(exc))
         results.append(result)
-        if not result.get('scored', True):
-            status = "MEASURED"
-        else:
-            status = "PASS" if result['passed'] else "FAIL"
-        edge = f" [{result['edge_type']}]" if result.get('edge_type') else ""
-        print(f"  {test['id']:3d}: {status}{edge}")
-
-    return aggregate_expert_results(results)
-
-
-def pass_rate_breakdown(results, key):
-    groups = defaultdict(lambda: {'passed': 0, 'total': 0})
-    for r in results:
-        g = groups[r.get(key, 'unknown')]
-        g['total'] += 1
-        g['passed'] += bool(r['passed'])
-    return {k: {'rate': round(s['passed'] / s['total'], 3), 'n': s['total']}
-            for k, s in groups.items()}
-
-
-def aggregate_expert_results(results):
-    scored = [r for r in results if r.get('scored', True)]
-    measured = [r for r in results if not r.get('scored', True)]
-    standard = [r for r in scored if r['category'] != 'edge_case']
-    edge = [r for r in scored if r['category'] == 'edge_case']
-
-    def rate(lst):
-        return round(sum(r['passed'] for r in lst) / len(lst), 3) if lst else 0.0
-
-    return {
-        'overall': {'rate': rate(scored), 'n': len(scored)},
-        'standard': {'rate': rate(standard), 'n': len(standard)},
-        'edge_cases': {'rate': rate(edge), 'n': len(edge)},
-        'by_edge_type': pass_rate_breakdown(edge, 'edge_type'),
-        'by_check_type': pass_rate_breakdown(scored, 'check_type'),
-        'measured': [{'id': r['id'], 'edge_type': r.get('edge_type'),
-                      'passed': r['passed'], 'result_count': r['result_count']}
-                     for r in measured]
-    }
-
+        print(f"  {item['id']:>3} {'PASS' if result['passed'] else 'FAIL':4s} {item['category']}")
+    return expert_accuracy(results)
 
 
 def report_file(kg_results=None, cbr_results=None, cryptic_results=None,
@@ -569,14 +460,13 @@ def report_file(kg_results=None, cbr_results=None, cryptic_results=None,
     return data
 
 
-def print_expert_summary(kg):
-    print("\nExpert System")
-    print(f"  Standard:   {kg['standard']['rate']:.1%} (n={kg['standard']['n']})")
-    print(f"  Edge Cases: {kg['edge_cases']['rate']:.1%} (n={kg['edge_cases']['n']})")
-    print(f"  Overall:    {kg['overall']['rate']:.1%}")
-    print("  By check type:")
-    for check, s in kg['by_check_type'].items():
-        print(f"    {check:15s}: {s['rate']:.1%} (n={s['n']})")
+def print_expert_summary(expert):
+    print("\nExpert System (NL to Cypher)")
+    print(f"  Model:    {expert['model']}")
+    print(f"  Accuracy: {expert['overall']['rate']:.1%} (n={expert['overall']['n']}, execution match)")
+    print("  By category:")
+    for name, stats in expert['by_category'].items():
+        print(f"    {name:15s}: {stats['rate']:.1%} (n={stats['n']})")
 
 
 def print_cbr_summary(cbr):
@@ -589,7 +479,9 @@ def print_cbr_summary(cbr):
     print(f"  Regimen (mode): {mode['mean']:.1%} [{mode['ci_lower']:.1%}, {mode['ci_upper']:.1%}]")
     print(f"  Outcome:       {out['mean']:.1%} [{out['ci_lower']:.1%}, {out['ci_upper']:.1%}]")
     cal = cbr['calibration']
-    print(f"  ECE:      {cal['ece']:.4f} (raw); temp-scaling rejected -> {cal['ece_temperature_scaled']:.4f} (T={cal['temperature_mean']})")
+    print(f"  ECE:   {cal['ece']:.4f} raw, {cal['ece_temperature_scaled']:.4f} after temperature "
+          f"scaling (rejected, T={cal['temperature_mean']})")
+    print(f"  Brier: {cal['brier']:.4f}")
     base = cbr['baseline']
     print(f"  Baseline: regimen {base['regimen']:.1%}, outcome {base['outcome']:.1%}")
 
@@ -600,22 +492,9 @@ def print_cbr_summary(cbr):
             print(f"  {profile:12s}: {p['accuracy']:.1%} (n={p['n']})")
 
 
-def print_edge_summary(kg):
-    print("\nEdge Case Breakdown")
-    for etype, stats in kg['by_edge_type'].items():
-        print(f"  {etype:20s}: {stats['rate']:.1%} (n={stats['n']})")
-
-
 def print_summary(data):
-
-    print("VALIDATION SUMMARY")
-    print("-" * 60)
-
     print_expert_summary(data['expert_system'])
     print_cbr_summary(data['cbr'])
-    print_edge_summary(data['expert_system'])
-
-    print("\n" + "=" * 60)
 
 
 # CRYPTIC CLASSIFICATION VALIDATION
@@ -640,14 +519,16 @@ def collapse_tier(label):
 
 
 def tier_accuracy(truth, prediction):
-    correct = prediction == truth
-    by_tier = {}
-    for tier in COLLAPSED:
-        mask = truth == tier
-        n = int(mask.sum())
-        if n:
-            by_tier[tier] = {'accuracy': round(float(correct[mask].mean()), 3), 'n': n}
-    return {'overall': round(float(correct.mean()), 3), 'by_tier': by_tier}
+    """Overall, balanced, and macro-F1 accuracy with per-tier sensitivity and specificity."""
+    rates = {t: r for t, r in class_rates(truth, prediction, COLLAPSED).items() if r['n']}
+    by_tier = {t: {'accuracy': r['sensitivity'], 'n': r['n']} for t, r in rates.items()}
+    return {
+        'overall': round(float((prediction == truth).mean()), 3),
+        'balanced': balanced_accuracy(rates),
+        'macro_f1': macro_f1(rates),
+        'by_tier': by_tier,
+        'rates': rates,
+    }
 
 
 def confusion(truth, prediction):
@@ -661,13 +542,16 @@ def agreement(truth, engine, catalog):
     resistant = truth.isin(RESISTANT_TIERS)
     engine_ok = engine == truth
     catalog_ok = catalog == truth
+    engine_only = int((resistant & ~engine_ok & catalog_ok).sum())
+    catalog_only = int((resistant & engine_ok & ~catalog_ok).sum())
     return {
         'engine_catalog_match': round(float((engine == catalog).mean()), 3),
         'resistant_isolates': int(resistant.sum()),
         'both_correct': int((resistant & engine_ok & catalog_ok).sum()),
         'both_wrong': int((resistant & ~engine_ok & ~catalog_ok).sum()),
-        'engine_only_wrong': int((resistant & ~engine_ok & catalog_ok).sum()),
-        'catalog_only_wrong': int((resistant & engine_ok & ~catalog_ok).sum()),
+        'engine_only_wrong': engine_only,
+        'catalog_only_wrong': catalog_only,
+        'mcnemar': mcnemar(engine_only, catalog_only),
     }
 
 
@@ -704,7 +588,7 @@ class IsolateOntology:
 
 
 class Evaluator:
-    """A validated sub-unit: maps test isolates to a collapsed resistance class."""
+    """A validated sub-unit that maps isolates to a collapsed resistance class."""
 
     name = 'evaluator'
 
@@ -759,27 +643,27 @@ class CatalogEvaluator(Evaluator):
 
 
 class ClassificationValidation:
-    """Runs every classification sub-unit on the shared test split and scores them together."""
+    """Runs every classification sub-unit on all labeled isolates and scores them together."""
 
     def __init__(self):
         from feature_engineering import dataset, drug_map, DATA
         data = dataset()
         self.data_dir = DATA
-        self.test = data[data['split'] == 'test'].set_index('uniqueid')
+        self.labeled = data.set_index('uniqueid')
         self.drugs = drug_map(DATA / 'DRUG_CODES.csv')
-        self.truth = self.test['label'].map(collapse_tier)
+        self.truth = self.labeled['label'].map(collapse_tier)
 
     def run(self):
         engine_eval = RuleEngineEvaluator(self.data_dir / 'EFFECTS.parquet', self.drugs)
-        catalog_eval = CatalogEvaluator(self.test['catalog'])
+        catalog_eval = CatalogEvaluator(self.labeled['catalog'])
         preds = {
-            engine_eval.name: engine_eval.predictions(self.test.index),
-            catalog_eval.name: catalog_eval.predictions(self.test.index),
+            engine_eval.name: engine_eval.predictions(self.labeled.index),
+            catalog_eval.name: catalog_eval.predictions(self.labeled.index),
         }
         scores = {name: {**tier_accuracy(self.truth, p), 'confusion': confusion(self.truth, p)}
                   for name, p in preds.items()}
         return {
-            'test_isolates': len(self.test),
+            'eval_isolates': len(self.labeled),
             'scheme': 'below-MDR / MDR / PreXDR / XDR; no genotypic call counts as below-MDR',
             'scores': scores,
             'agreement': agreement(self.truth, preds['rule_engine'], preds['who_catalog']),
@@ -794,11 +678,13 @@ def validate_classification():
 
 def print_class_scores(scores):
     for name, score in scores.items():
-        print(f"\n{name}: overall {score['overall']:.1%}")
+        print(f"\n{name}: overall {score['overall']:.1%}, balanced {score['balanced']:.1%}, "
+              f"macro-F1 {score['macro_f1']:.3f}")
         for tier in COLLAPSED:
-            if tier in score['by_tier']:
-                stat = score['by_tier'][tier]
-                print(f"  {tier:10s}: {stat['accuracy']:.1%} (n={stat['n']})")
+            if tier in score['rates']:
+                r = score['rates'][tier]
+                print(f"  {tier:10s}: sens {r['sensitivity']:.1%}  spec {r['specificity']:.1%}  "
+                      f"ppv {r['precision']:.1%}  (R={r['n']})")
 
 
 def print_class_confusion(score):
@@ -816,13 +702,13 @@ def print_class_agreement(agree):
     print(f"  both wrong (biological ceiling): {agree['both_wrong']}")
     print(f"  engine-only wrong (fixable)    : {agree['engine_only_wrong']}")
     print(f"  catalog-only wrong             : {agree['catalog_only_wrong']}")
+    mc = agree['mcnemar']
+    print(f"  McNemar: chi2 {mc['chi2']}, p {mc['p_value']:.2e} ({mc['discordant']} discordant)")
 
 
 def print_classification(summary):
-    print("\n" + "=" * 60)
-    print("CRYPTIC CLASSIFICATION VALIDATION")
-    print("=" * 60)
-    print(f"test isolates: {summary['test_isolates']:,}")
+    print("\nCRyPTIC Classification Validation")
+    print(f"labeled isolates: {summary['eval_isolates']:,}")
     print_class_scores(summary['scores'])
     print_class_confusion(summary['scores']['rule_engine'])
     print_class_agreement(summary['agreement'])
@@ -841,7 +727,7 @@ def setup_ontology():
         ontology.who_mutations()
         ontology.count_who_mutations()
     except Exception as e:
-        print(f"WHO data skipped: {e}")
+        print(f"WHO data skipped ({e})")
 
     return ontology
 
@@ -863,25 +749,25 @@ def run_system_validation():
 
 def main():
     print("Validation Summary")
-    print("-" * 60)
+    load_dotenv()
 
     expert = cbr = cryptic = None
 
     try:
         expert, cbr = run_system_validation()
     except Exception as e:
-        print(f"\nSystem validation skipped - graph/API unavailable: {e}")
+        print(f"\nSystem validation skipped, graph or API unavailable ({e})")
 
     try:
         cryptic = validate_classification()
         print_classification(cryptic)
     except Exception as e:
-        print(f"\nClassification validation skipped: {e}")
+        print(f"\nClassification validation skipped ({e})")
 
     data = report_file(expert, cbr, cryptic)
     if expert and cbr:
         print_summary(data)
-    print("\nResults saved: validation_results.json")
+    print("\nResults saved to validation_results.json")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,204 @@
+{
+  "eval_isolates": 65588,
+  "drugs": [
+    "amikacin",
+    "bedaquiline",
+    "capreomycin",
+    "clofazimine",
+    "delamanid",
+    "ethambutol",
+    "ethionamide",
+    "isoniazid",
+    "kanamycin",
+    "levofloxacin",
+    "linezolid",
+    "moxifloxacin",
+    "pyrazinamide",
+    "rifampin",
+    "streptomycin"
+  ],
+  "rule_engine": {
+    "amikacin": {
+      "sensitivity": 0.685,
+      "specificity": 0.946,
+      "precision": 0.518,
+      "n": 2885
+    },
+    "bedaquiline": {
+      "sensitivity": 0.4,
+      "specificity": 0.992,
+      "precision": 0.715,
+      "n": 1094
+    },
+    "capreomycin": {
+      "sensitivity": 0.724,
+      "specificity": 0.911,
+      "precision": 0.439,
+      "n": 1743
+    },
+    "clofazimine": {
+      "sensitivity": 0.057,
+      "specificity": 0.993,
+      "precision": 0.27,
+      "n": 1132
+    },
+    "delamanid": {
+      "sensitivity": 0.056,
+      "specificity": 0.999,
+      "precision": 0.56,
+      "n": 496
+    },
+    "ethambutol": {
+      "sensitivity": 0.718,
+      "specificity": 0.93,
+      "precision": 0.682,
+      "n": 9138
+    },
+    "ethionamide": {
+      "sensitivity": 0.564,
+      "specificity": 0.937,
+      "precision": 0.667,
+      "n": 5095
+    },
+    "isoniazid": {
+      "sensitivity": 0.737,
+      "specificity": 0.987,
+      "precision": 0.975,
+      "n": 23599
+    },
+    "kanamycin": {
+      "sensitivity": 0.582,
+      "specificity": 0.979,
+      "precision": 0.776,
+      "n": 3917
+    },
+    "levofloxacin": {
+      "sensitivity": 0.655,
+      "specificity": 0.979,
+      "precision": 0.859,
+      "n": 3813
+    },
+    "linezolid": {
+      "sensitivity": 0.233,
+      "specificity": 0.998,
+      "precision": 0.691,
+      "n": 575
+    },
+    "moxifloxacin": {
+      "sensitivity": 0.702,
+      "specificity": 0.952,
+      "precision": 0.713,
+      "n": 5023
+    },
+    "pyrazinamide": {
+      "sensitivity": 0.739,
+      "specificity": 0.972,
+      "precision": 0.853,
+      "n": 5466
+    },
+    "rifampin": {
+      "sensitivity": 0.782,
+      "specificity": 0.98,
+      "precision": 0.946,
+      "n": 18698
+    },
+    "streptomycin": {
+      "sensitivity": 0.605,
+      "specificity": 0.953,
+      "precision": 0.882,
+      "n": 8059
+    }
+  },
+  "who_catalog": {
+    "amikacin": {
+      "sensitivity": 0.663,
+      "specificity": 0.989,
+      "precision": 0.834,
+      "n": 2885
+    },
+    "bedaquiline": {
+      "sensitivity": 0.4,
+      "specificity": 0.992,
+      "precision": 0.715,
+      "n": 1094
+    },
+    "capreomycin": {
+      "sensitivity": 0.682,
+      "specificity": 0.981,
+      "precision": 0.776,
+      "n": 1743
+    },
+    "clofazimine": {
+      "sensitivity": 0.057,
+      "specificity": 0.993,
+      "precision": 0.27,
+      "n": 1132
+    },
+    "delamanid": {
+      "sensitivity": 0.056,
+      "specificity": 0.999,
+      "precision": 0.56,
+      "n": 496
+    },
+    "ethambutol": {
+      "sensitivity": 0.718,
+      "specificity": 0.93,
+      "precision": 0.682,
+      "n": 9138
+    },
+    "ethionamide": {
+      "sensitivity": 0.564,
+      "specificity": 0.937,
+      "precision": 0.667,
+      "n": 5095
+    },
+    "isoniazid": {
+      "sensitivity": 0.737,
+      "specificity": 0.987,
+      "precision": 0.975,
+      "n": 23599
+    },
+    "kanamycin": {
+      "sensitivity": 0.58,
+      "specificity": 0.984,
+      "precision": 0.815,
+      "n": 3917
+    },
+    "levofloxacin": {
+      "sensitivity": 0.655,
+      "specificity": 0.979,
+      "precision": 0.859,
+      "n": 3813
+    },
+    "linezolid": {
+      "sensitivity": 0.233,
+      "specificity": 0.998,
+      "precision": 0.691,
+      "n": 575
+    },
+    "moxifloxacin": {
+      "sensitivity": 0.702,
+      "specificity": 0.952,
+      "precision": 0.713,
+      "n": 5023
+    },
+    "pyrazinamide": {
+      "sensitivity": 0.739,
+      "specificity": 0.972,
+      "precision": 0.853,
+      "n": 5466
+    },
+    "rifampin": {
+      "sensitivity": 0.782,
+      "specificity": 0.98,
+      "precision": 0.946,
+      "n": 18698
+    },
+    "streptomycin": {
+      "sensitivity": 0.605,
+      "specificity": 0.953,
+      "precision": 0.882,
+      "n": 8059
+    }
+  }
+}
