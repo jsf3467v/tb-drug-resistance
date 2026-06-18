@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-# Runs from tests/. SRC/ and Evaluation/ are added to the import path so the core modules below resolve.
+# Runs from Evaluation/. SRC/ and Evaluation/ are added to the import path so the core modules below resolve.
 
 ROOT = Path(__file__).resolve().parent.parent
 for _folder in (ROOT / "SRC", ROOT / "Evaluation"):
@@ -246,13 +246,13 @@ def test_regimen_mode_tracks_baseline():
     assert abs(baseline - mode) < abs(baseline - outcome_ranked)
 
 
-def test_query_check_types():
-    by_id = {t["id"]: validation.query_check_type(t)
-             for t in validation.standard_queries() + validation.edge_case_queries()}
-    assert by_id[2] == "classification"    # requires_rules + expected_classification
-    assert by_id[1] == "content_match"     # substring containment only
-    assert by_id[104] == "empty_expected"  # min_results == 0
-    assert by_id[105] == "absence"         # negation / expected_absent
+def test_expert_queries_wellformed():
+    queries = validation.expert_queries()
+    ids = [q["id"] for q in queries]
+    assert len(ids) == len(set(ids))                     # ids are unique
+    for q in queries:
+        assert q["question"] and q["category"]           # every query is labeled
+        assert ("gold" in q) != bool(q.get("unanswerable"))  # exactly one of gold or unanswerable
 
 
 # seed knowledge graph. static integrity (no database)
@@ -305,63 +305,62 @@ def test_stored_profiles_match_mutations():
     assert mismatches == [], f"profile/mutation mismatches: {mismatches}"
 
 
-# expert-system scoring. empty results, negation, measured cases
+# expert-system scoring. set match, empty results, negation leaks, unanswerable refusal
+
+def test_same_answer_matches_equal_sets():
+    gold = [{"strain": "TB002"}, {"strain": "TB003"}]
+    produced = [{"s": "TB003", "lineage": 4}, {"s": "TB002", "lineage": 2}]
+    assert validation.same_answer(gold, produced)        # row order and extra columns do not matter
+
+
+def test_same_answer_rejects_row_count_changes():
+    gold = [{"strain": "TB002"}, {"strain": "TB003"}]
+    assert not validation.same_answer(gold, [{"strain": "TB002"}])    # a gold row is missing
+    assert not validation.same_answer(gold, gold + [{"strain": "TB001"}])  # an extra row leaks in
+
 
 class FakeNL:
-    """Stand-in NL interface returning canned Cypher and results."""
+    """Stand-in NL interface. execute_query returns the gold rows for the gold query
+    and the produced rows otherwise, so evaluate_query exercises same_answer the way
+    it does against a live graph."""
 
-    def __init__(self, results, valid=True):
-        self.results = results
+    def __init__(self, produced, gold=None, cypher="MATCH (s) RETURN s", valid=True):
+        self.produced = produced
+        self.gold = produced if gold is None else gold
+        self.cypher = cypher
         self.valid = valid
-        self.last_question = None
 
     def generate_cypher(self, question):
-        return "MATCH (s) RETURN s"
+        return self.cypher
 
     def validate_cypher(self, cypher):
         return self.valid, None
 
     def execute_query(self, cypher):
-        return self.results
-
-    def needs_rules(self, question):
-        return None
-
-    def rule_recommend(self, results, qtype):
-        return None
+        return self.produced if cypher == self.cypher else self.gold
 
 
-def edge(test_id):
-    return {t["id"]: t for t in validation.edge_case_queries()}[test_id]
+def query(test_id):
+    return {q["id"]: q for q in validation.expert_queries()}[test_id]
 
 
-def test_empty_result_passes_when_none_expected():
-    for test_id in (104, 107, 108):
-        result = validation.evaluate_query(edge(test_id), FakeNL([]))
-        assert result["passed"], test_id
+def test_unanswerable_passes_when_refused():
+    refused = FakeNL([], cypher="UNANSWERABLE: cannot edit the graph")
+    assert validation.evaluate_query(query(10), refused)["passed"]
+    answered = FakeNL([{"s": "TB001"}], cypher="MATCH (s) SET s.profile = 'Susceptible'")
+    assert not validation.evaluate_query(query(10), answered)["passed"]
 
 
-def test_nonempty_fails_when_none_expected():
-    result = validation.evaluate_query(edge(104), FakeNL([{"s": "TB001"}]))
-    assert not result["passed"]
+def test_empty_result_matches_empty_gold():
+    result = validation.evaluate_query(query(9), FakeNL([], gold=[]))
+    assert result["passed"]
 
 
-def test_negation_excludes_resistant():
-    nl = FakeNL([{"strain_id": "TB002"}, {"strain_id": "TB052"}])
-    assert validation.evaluate_query(edge(105), nl)["passed"]
-
-
-def test_negation_detects_leak():
-    nl = FakeNL([{"strain_id": "TB001"}, {"strain_id": "TB002"}])
-    assert not validation.evaluate_query(edge(105), nl)["passed"]
-
-
-def test_ambiguous_case_is_measured_not_scored():
-    results = [validation.evaluate_query(t, FakeNL([{"x": "TB003"}]))
-               for t in validation.edge_case_queries()]
-    agg = validation.aggregate_expert_results(results)
-    assert [m["id"] for m in agg["measured"]] == [103]
-    assert agg["overall"]["n"] == len(validation.edge_case_queries()) - 1
+def test_negation_leak_fails():
+    excludes = FakeNL([{"strain": "TB002"}], gold=[{"strain": "TB002"}])
+    assert validation.evaluate_query(query(6), excludes)["passed"]
+    leaks = FakeNL([{"strain": "TB001"}, {"strain": "TB002"}], gold=[{"strain": "TB002"}])
+    assert not validation.evaluate_query(query(6), leaks)["passed"]
 
 
 # rule engine. class-level cross-resistance
@@ -379,3 +378,84 @@ def test_no_class_exclusion_when_no_class_resistance():
     excluded = {e["drug"] for e in evaluate(muts)["recommendations"]["exclusions"]}
     assert "moxifloxacin" not in excluded
     assert "levofloxacin" not in excluded
+
+# nl interface. read-only guard, query normalization, and routing (no database, no api)
+
+@pytest.fixture(scope="module")
+def nl_interface():
+    from nl_interface import NLInterface
+    return NLInterface(FakeOntology([]), api_key="test-key")
+
+
+def test_write_guard_rejects_writes(nl_interface):
+    for cypher in ("MATCH (n) DELETE n", "CREATE (n)", "MATCH (n) SET n.x = 1",
+                   "MERGE (n)", "MATCH (n) DETACH DELETE n", "MATCH (n) REMOVE n.x"):
+        assert not nl_interface.validate_cypher(cypher)[0], cypher
+
+
+def test_write_guard_keyword_boundary(nl_interface):
+    # a value that merely contains a keyword stays valid (asset holds SET)
+    ok, _ = nl_interface.validate_cypher("MATCH (d:Drug) WHERE d.mechanism CONTAINS 'asset' RETURN d")
+    assert ok
+
+
+def test_read_guard_allows_read_clauses(nl_interface):
+    for cypher in ("MATCH (n) RETURN n", "OPTIONAL MATCH (n) RETURN n",
+                   "WITH 1 AS x RETURN x", "UNWIND [1, 2] AS x RETURN x"):
+        ok, err = nl_interface.validate_cypher(cypher)
+        assert ok and err is None, cypher
+
+
+def test_unanswerable_passes_guard(nl_interface):
+    assert nl_interface.validate_cypher("UNANSWERABLE: cannot edit the graph")[0]
+
+
+def test_unbalanced_delimiters_rejected(nl_interface):
+    assert not nl_interface.validate_cypher("MATCH (n RETURN n")[0]
+    assert not nl_interface.validate_cypher("MATCH (n)-[r RETURN r")[0]
+
+
+def test_canonical_drugs_rewrites_alias():
+    from nl_interface import canonical_drugs
+    out = canonical_drugs("MATCH (d:Drug {name: 'rifampicin'}) RETURN d")
+    assert "'rifampin'" in out and "rifampicin" not in out
+
+
+def test_runnable_cypher_drops_aggregate_orderby():
+    from nl_interface import runnable_cypher
+    agg = "MATCH (s:Strain) RETURN s.year AS y, count(s) AS n ORDER BY s.year"
+    assert "order by" not in runnable_cypher(agg).lower()
+
+
+def test_runnable_cypher_keeps_plain_orderby():
+    from nl_interface import runnable_cypher
+    plain = "MATCH (s:Strain) RETURN s.strain_id AS strain ORDER BY s.strain_id"
+    assert runnable_cypher(plain) == plain
+
+
+def test_needs_rules_routing(nl_interface):
+    assert nl_interface.needs_rules("What treatment should patient P003 receive") == 'treatment'
+    assert nl_interface.needs_rules("Classify strain TB001") == 'classification'
+    assert nl_interface.needs_rules("Show all MDR strains") is False
+    assert nl_interface.needs_rules("What mutations cause rifampin resistance") is False
+
+
+def test_canonical_gene_fraction_counts_distinct_mutations():
+    # one mutation confers resistance to several drugs, so it repeats once per drug
+    # in the detailed view; the fraction counts the mutation once, not once per drug.
+    rows = [mutation("amikacin", "rrs", "rrs_1401", 1401),
+            mutation("kanamycin", "rrs", "rrs_1401", 1401),
+            mutation("capreomycin", "rrs", "rrs_1401", 1401),
+            mutation("rifampin", "rpoB", "rpoB_S450L", 450)]
+    assert evaluate(rows)["canonical_gene_fraction"] == 0.5
+
+
+def test_paren_in_literal_allowed(nl_interface):
+    # a parenthesis inside a string literal must not fail the balance check
+    ok, err = nl_interface.validate_cypher("MATCH (d:Drug) WHERE d.mechanism CONTAINS '(' RETURN d")
+    assert ok and err is None
+
+
+def test_needs_rules_ignores_four_digit_id(nl_interface):
+    # P1000 is a four-digit case id and must not be read as the patient P100
+    assert nl_interface.needs_rules("show case P1000") is False
