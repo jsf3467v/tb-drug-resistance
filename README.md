@@ -54,7 +54,7 @@ A question such as "What treatment should patient P003 receive" is answered acro
 
 ### Running the demo
 
-After installing the dependencies and setting the environment described under Setup, bring the system up in this order.
+After installing the dependencies and setting the environment (see [DEPLOYME.md](DEPLOYME.md)), bring the system up in this order.
 
 1. Start a local Memgraph instance in Docker and leave it running in the background. If the container already exists from an earlier run, resume it with `docker start memgraph` instead.
 
@@ -241,18 +241,6 @@ The same suite runs in continuous integration on every push, across Python 3.10,
 
 
 - Gene-aware injectable cross-resistance. The current whole-class rule flags amikacin, kanamycin, and capreomycin together, which the per-drug table shows over-calls amikacin and capreomycin against measured DST. Keying cross-resistance on the gene, with rrs conferring broad resistance and eis leaning toward kanamycin, would recover the lost precision without changing the tier results.
-
-## Setup
-
-Install the dependencies, then set the environment.
-
-```bash
-pip install -r requirements.txt
-```
-
-The natural-language interface calls the Anthropic API, so set `ANTHROPIC_API_KEY` in your environment or in a local `.env` file. Graph credentials are read from the environment as well, through `NEO4J_URI`, `NEO4J_USER`, and `NEO4J_PASSWORD`, and default to a local no-auth instance at `bolt://localhost:7687`. The `.env.example` file lists the variables to set.
-
-The steps under Running the demo bring up the graph and the app. For the full local runbook, including dataset placement and troubleshooting, see [DEPLOYME.md](DEPLOYME.md).
 
 ## References
 
