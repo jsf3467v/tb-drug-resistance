@@ -1,22 +1,20 @@
 # TB Drug-Resistance Decision Support System
 
-![tests](https://github.com/jsf3467v/tb-drug-resistance/actions/workflows/ci.yml/badge.svg)
+![tests](https://github.com/jsf3467v/tb-drug-resistance/actions/workflows/tests.yml/badge.svg)
 
-A hybrid decision-support prototype for Mycobacterium tuberculosis drug resistance. It combines a WHO-grounded knowledge graph, a symbolic rule engine, case-based reasoning over synthetic patient cases, and an LLM-driven natural-language query layer. Its symbolic core is validated against real-world resistance measurements from the CRyPTIC consortium.
+A hybrid decision-support prototype for *Mycobacterium tuberculosis* drug resistance. It combines a WHO-grounded knowledge graph, a symbolic rule engine, case-based reasoning over synthetic patient cases, and an LLM-driven natural-language query layer. Its symbolic core is validated against real-world resistance measurements from the CRyPTIC consortium.
 
 ## Objective
 
-This system was developed as a graduate course project and serves as a portfolio piece. Its primary goal is to demonstrate how several methods can function together as a cohesive pipeline, a knowledge graph for evidence-based structure, a symbolic rule engine for transparent classification and treatment decisions, case-based reasoning to provide recommendations when rules are insufficient, and a natural-language interface that translates plain English into graph queries. Drug-resistant tuberculosis was deliberately chosen as the domain because it is a problem where each method has a distinct role, and the reasoning process needs to be transparent rather than hidden.
+This system was developed as a graduate course project and serves as a portfolio piece. Its goal is to show how several methods work together as one pipeline. The knowledge graph supplies evidence-based structure, and the rule engine produces transparent classifications and treatment decisions. Case-based reasoning addresses cases that the rules cannot settle, and a natural-language layer translates questions into graph queries. Drug-resistant tuberculosis was chosen because each method has a clear role here, and the reasoning must remain auditable rather than hidden.
 
-Choosing healthcare also meant working with imperfect data. Resistance data is often incomplete and noisy, with the two phenotype assays sometimes disagreeing on isolates. Additionally, open data linking genotype, treatment, and outcomes is rare. The project explicitly acknowledges these limitations as part of the study rather than hiding them. It reports the genotype-phenotype discordance, assay disagreements that create a noise floor, and missing outcome data, which necessitated a synthetic case base. The goal was to demonstrate the methods transparently and to honestly engage with the data's quality and constraints, rather than developing a clinical tool.
+Choosing healthcare also involved dealing with imperfect data. Resistance measurements are often incomplete and noisy, and sometimes the two phenotype assays disagree on the same isolate. Supplemental data that could fill these gaps was difficult to obtain. Records linking genotype, treatment, and outcome are rare, and the outcome data needed for the case base was not available at the required scale. The study reports these limitations, including genotype-phenotype discordance, assay disagreements that create a noise floor, and missing outcome data that necessitated a synthetic case base. The goal was to honestly acknowledge these data limitations rather than to develop a clinical tool.
 
 ## Overview
 
-Drug-resistant tuberculosis demands reasoning that is both auditable and grounded in current evidence. This system pairs an explicit symbolic layer, where every resistance classification can be traced to a WHO catalog rule, with a case-based layer that draws on prior patient experience where guidelines are silent. A natural-language interface translates plain-English questions into graph queries under a read-only guard, and a Streamlit front end exposes the full reasoning trace.
+Drug-resistant tuberculosis requires reasoning that is both auditable and grounded in current evidence. This system combines an explicit symbolic layer, where each resistance classification links to a WHO catalog rule, with a case-based layer that leverages prior patient experience when guidelines are absent. It features a natural-language interface that converts questions into graph queries within a read-only environment, and a Streamlit front end that visualizes the complete reasoning process.
 
-The project is presented as a portfolio piece rather than a deployable clinical tool. Its thesis is honest, rigorously evaluated engineering, with the synthetic patient layer and the genotype-phenotype prediction ceiling treated as measured limits rather than hidden ones.
-
-A short demo video of the front end and its reasoning trace is in progress.
+The synthetic patient layer and the genotype-phenotype prediction ceiling are treated as measured limits rather than hidden ones. A short demo video of the front end and its reasoning trace is in progress.
 
 ## Interactive demo
 
@@ -29,7 +27,7 @@ A question such as "What treatment should patient P003 receive" is answered acro
 - Query Results carries the direct answer, the strain and its classification, the recommended regimen, and a table of contraindicated drugs tied to the mutations that rule them out.
 - Expert System exposes the rule-engine trace, the evidence confidence, the rules that fired, and the regimen with its drug exclusions.
 - Case-Based Reasoning retrieves the nearest matches from the 1,000 synthetic patient cases and reports a success rate and a confidence band.
-- Technical Details shows the Cypher that the natural-language layer generated from the question, so the path from plain English to graph query stays visible.
+- Technical Details shows the Cypher that the natural-language layer generated from the question, so the path from text to graph query stays visible.
 
 ![The Technical Details tab showing the Cypher generated from the question together with the twelve graph results returned](assets/tech-details.png)
 
@@ -67,11 +65,11 @@ The seed strains and patients load whether or not the large datasets are present
 
 The design separates a durable, evidence-grounded platform from a swappable patient layer.
 
-- Knowledge graph. A Memgraph store holding 1,295 mutation nodes drawn from the WHO mutation catalog. The catalog grades all 48,152 of its variants from 1 to 5, and the graph loads only the 1,383 rows graded 1 or 2, the variant-drug associations it links to resistance, since the higher groups carry uncertain or no association. Those rows collapse to 1,291 distinct catalog nodes, because a node is keyed by its mutation identifier, so a variant graded against several drugs merges into one node, and the seed strains loaded before the catalog merge supply the remaining four. Memgraph speaks the Bolt protocol, so the code reaches it through the standard neo4j Python driver, and the neo4j dependency in requirements.txt is that driver rather than a separate database.
+- Knowledge graph. A Memgraph store holding 1,295 mutation nodes drawn from the WHO mutation catalog. The catalog grades all 48,152 of its variants from 1 to 5. The graph loads only the 1,383 rows graded 1 or 2, the variant-drug associations tied to resistance, since the higher groups carry uncertain or no association. Those rows collapse to 1,291 distinct nodes, because a node is keyed by its mutation identifier, so a variant graded against several drugs merges into one node. The four remaining nodes come from the seed strains loaded before the catalog merge. Memgraph speaks the Bolt protocol, so the code reaches it through the standard neo4j Python driver, and the neo4j dependency in requirements.txt is that driver rather than a separate database.
 
 - Rule engine. A forward and backward chaining symbolic engine that classifies isolates as MDR, pre-XDR, or XDR, applies whole-class cross-resistance, and selects between the BPaL and BPaLM regimens.
 
-- Case-based reasoning. Retrieval over 1,000 synthetic patient cases, used where the rules alone do not determine a regimen.
+- Case-based reasoning. Retrieval of over 1,000 synthetic patient cases, used where the rules alone do not determine a regimen.
 
 - Natural-language interface. An LLM layer that generates Cypher from plain English behind a read-only write guard. The query runs in a read transaction that Memgraph rejects on any write, so the database itself is the barrier, and a keyword pre-filter blocks an obvious write before the query runs.
 
@@ -83,9 +81,9 @@ The figure below traces one strain through the graph, from its mutations to the 
 
 ### Real-world validation of the symbolic core
 
-The rule engine was validated on all 65,588 CRyPTIC isolates that carry a measured drug-susceptibility phenotype. It reproduces the WHO genotypic catalog on 99.8% of isolates, which confirms that the engine faithfully reimplements the catalog tiering it encodes rather than adding hidden logic. Measured against phenotype, the engine reaches 83.4% overall accuracy and the WHO catalog reaches 83.5%. The two are close but not identical. A paired McNemar test on the 105 isolates where they disagree gives $\chi^2 = 77.1$ and $p \approx 1.6 \times 10^{-18}$, and 98 of those 105 disagreements are engine-side, all accounted for below. The gap is small, real, and explained.
+The rule engine was validated on all 65,588 CRyPTIC isolates with a measured drug-susceptibility phenotype. It reproduces the WHO genotypic catalog on 99.8% of isolates, confirming that the engine faithfully reimplements the catalog tiering it encodes rather than adding hidden logic. Measured against phenotype, the engine achieves 83.4% overall accuracy, while the WHO catalog achieves 83.5%. The two are close but not identical. A paired McNemar test on the 105 isolates where they disagree yields $\chi^2 = 77.1$ and $p \approx 1.6 \times 10^{-18}$, and 98 of those 105 disagreements are engine-side, all accounted for below. The gap is small, real, and explained.
 
-Accuracy alone flatters an imbalanced set where below-MDR is 73.3% of the isolates, so a classifier that always predicts below-MDR already reaches 73.3%. Balanced accuracy, the mean of the per-tier sensitivities, is 67.4% for the engine against 67.9% for the catalog, and macro-F1 is 0.662 against 0.666. Per-tier sensitivity runs from 91.6% on below-MDR to 61.9% on MDR, 61.5% on pre-XDR, and 54.7% on XDR, and specificity stays above 94% on every resistant tier.
+Relying solely on accuracy favors an imbalanced dataset, where below-MDR cases make up 73.3% of the isolates, meaning a model that always predicts below-MDR would already achieve that baseline 73.3%. Balanced accuracy, calculated as the average of sensitivities across different tiers, is 67.4% for the engine compared to 67.9% for the catalog. The macro-F1 scores are 0.662 versus 0.666. Sensitivity per tier ranges from 91.6% on below-MDR, down to 61.9% on MDR, 61.5% on pre-XDR, and 54.7% on XDR. Specificity remains above 94% across all resistant tiers.
 
 ![Grouped bar chart of per-tier sensitivity against measured phenotype, rule engine versus WHO catalog, across below-MDR, MDR, pre-XDR, and XDR. The two systems are within a point of each other on every tier, and sensitivity declines from 92% on below-MDR to 55% on XDR as the tiers grow rarer.](assets/cryptic_tier_sensitivity.png)
 
@@ -100,23 +98,23 @@ The error analysis is the main finding. Of the 17,523 resistant isolates, the en
 | Engine only wrong | 98 | 0.6% | 80 data-coverage gaps plus 18 documented definitional cases |
 | Catalog only wrong | 7 | 0.04% | resistance the catalog misses but the engine catches |
 
-The 6,772 shared errors are a measured biological ceiling, not an error within the design. No genotype-based method can recover resistance that leaves no recognized genotypic marker. The 98 engine-only cases carry no logic defect either. Eighty are coverage gaps, where the catalog calls an isolate resistant but no graded mutation reaches the engine, so it defaults to below-MDR. The other eighteen are the documented pre-2021 definitional choice, where injectable-based escalation places an isolate one tier above the 2021 catalog, with thirteen that lift MDR to pre-XDR on injectable resistance and five that lift pre-XDR to XDR on fluoroquinolone-plus-injectable resistance. The actionable error is a 0.6% sliver.
+The 6,772 shared errors represent a biological upper limit, not a flaw in the design. No genotype-based method can detect resistance that lacks a recognized genotypic marker. The 98 engine-only cases also do not indicate a logical error. Eighty cases are coverage gaps, where the catalog labels an isolate as resistant, but no graded mutation is detected by the engine, resulting in a resistance below-MDR classification. The remaining eighteen are due to a pre-2021 definitional choice, where injectable-based escalation assigns an isolate to a higher resistance tier than the 2021 catalog. Thirteen of these elevate MDR to pre-XDR on injectable resistance; five raise pre-XDR to XDR due to fluoroquinolone-plus-injectable resistance. Overall, the actionable error accounts for a mere 0.6%.
 
 ### Per-drug resistance calls
 
-The tier validation groups measured drugs into four resistance categories. Each drug is scored individually as resistant or susceptible based on the DST phenotype, with the WHO catalog used as a reference. The engine and the catalog concur on twelve of the fifteen drugs, including both fluoroquinolones, because the catalog already combines levofloxacin and moxifloxacin under a single gyrA call. The only discrepancies occur with the three injectable drugs. In these cases, the engine considers whole-class cross-resistance, so any mutation in injectables results in flags for amikacin, kanamycin, and capreomycin together. This approach increases sensitivity slightly but reduces specificity, as injectables are only partially cross-resistant in practice.
+The tier validation groups categorized drugs into four resistance groups. Each drug is individually assessed for resistance or susceptibility based on the DST phenotype, using the WHO catalog as a reference. The engine and the catalog agree on 12 of 15 drugs, including both fluoroquinolones, since the catalog groups levofloxacin and moxifloxacin under a single gyrA call. The only discrepancies are with the three injectable drugs. In these cases, the engine assumes whole-class cross-resistance any mutation in this class indicates resistance to amikacin, kanamycin, and capreomycin collectively. This approach slightly increases sensitivity and decreases specificity, as injectables only partially exhibit cross-resistance in practice.
 
-For example, amikacin's precision drops from 0.834 in the catalog to 0.518 in the engine, and capreomycin's from 0.776 to 0.439. This tradeoff is explicitly recorded as a property of the heuristic rather than an implicit assumption. The scoring process is executed via `python Evaluation/metrics.py`, which generates `per_drug_results.json`.
+For example, amikacin's precision drops from 0.834 in the catalog to 0.518 in the engine, and capreomycin's from 0.776 to 0.439. This tradeoff is recorded as a property of the heuristic rather than an implicit assumption. The scoring runs through `python Evaluation/metrics.py`, which generates `per_drug_results.json`.
 
 ### Expert system
 
-The natural-language layer is evaluated based on execution match, where each question is paired with a gold standard query. A generated query is considered correct if it returns the same entities. Since this layer relies on live model generation, its score depends on the specific model used rather than being a fixed attribute. On claude-sonnet-4-6, it correctly answers ten out of eleven queries and maintains this accuracy across different runs, as it generates responses at temperature zero. The only failure occurs in a lookup where the generator produces more information than the question requests, extracting a relationship property without binding the relationship. This causes the database to reject the query as it contains an unbound variable. The deterministic elements of the layer remain stable. A read-only write guard and query routing are fixed by the test suite. Additionally, normalization removes an order clause the database cannot handle after an aggregate, making the remaining issue a generation mistake rather than a flaw in the layer.
+The natural-language layer's performance is assessed based on execution match, where each question is matched with a gold-standard query. A generated query is considered correct if it returns the same entities. Since the layer depends on live model generation, its score varies with the model used, rather than being a fixed measure. For example, on claude-sonnet-4-6, it correctly answers ten out of eleven queries and maintains that accuracy across different runs, as it generates responses at temperature zero. The only failure occurs during a lookup, where the generator returns more information than requested, specifically extracting a relationship property without binding the relationship, leading the database to reject it as an unbound variable. The deterministic components of the layer remain stable. The read-only write guard and query routing are controlled by the test suite, and normalization removes an unsupported order clause after an aggregate. The remaining issue is a generation error, not a flaw in the layer itself.
 
 ### Case-based reasoning, the experimental component
 
-Regimen accuracy is 67.4% against an 81.0% majority-class baseline, and outcome accuracy is 74.5% against a 73.8% baseline. The regimen shortfall decomposes into roughly 7.5 points of objective mismatch and 6 points of retrieval starvation in the rare resistant classes, where neighbor-based retrieval is data-poor by construction. This result is reported as the measured behavior of the experimental layer, not as the headline.
+The regimen accuracy stands at 67.4%, compared to an 81.0% baseline for the majority class, while outcome accuracy reaches 74.5%, slightly above the 73.8% baseline. The shortfall in regimen performance mainly results from approximately 7.5 points of objective mismatch and about 6 points of retrieval starvation in the rare resistant classes, where neighbor-based retrieval inherently has limited data. This reflects the observed behavior of the experimental layer, not the overall result.
 
-Regimen accuracy also varies sharply by resistance profile, which is where the retrieval starvation shows itself.
+Regimen accuracy also changes significantly depending on the resistance profile, revealing the effects of retrieval starvation.
 
 | Profile | Regimen accuracy | n |
 | --- | ---: | ---: |
@@ -127,9 +125,9 @@ Regimen accuracy also varies sharply by resistance profile, which is where the r
 | PreXDR | 26.3% | 80 |
 | XDR | 21.7% | 60 |
 
-The synthetic cohort is a deliberate response to a structural data gap. A case-based regimen recommender needs records that link a genotype, a patient profile, the regimen given, and the outcome observed, and no open dataset carries that full chain at the scale required. Treatment-outcome data of this kind is scarce, fragmented across institutions, and tightly held for privacy reasons, which is a well-documented obstacle in clinical machine learning rather than a quirk of this project. Generating the cases keeps the retrieval layer transparent and reproducible while that gap stands.
+The synthetic cohort was created intentionally to address a significant data gap. A case-based regimen recommender requires data that connects genotype, patient profile, treatment regimen, and observed outcome. No publicly available dataset offers this complete chain at the necessary scale. Such treatment-outcome data is rare, scattered across different institutions, and often kept confidential for privacy reasons—an issue common in clinical machine learning. Creating the synthetic cases guarantees that the retrieval process stays transparent and reproducible despite this data gap.
 
-The weaker numbers in the rare resistant classes follow from the same scarcity. XDR and pre-XDR are uncommon by definition, so even a large cohort holds few neighbors for them, and neighbor-based retrieval degrades wherever a class is thin. The shortfall is therefore a measured consequence of insufficient data per class rather than a defect in the retrieval method, and it mirrors what learned models face on the same rare-disease data.
+The weaker numbers in the rare resistant classes follow from the same scarcity. XDR and pre-XDR are uncommon by definition, so even a large cohort holds few neighbors for them, and neighbor-based retrieval degrades wherever a class is thin. The shortfall is therefore a measured consequence of too little data per class rather than a defect in the retrieval method, and it mirrors what learned models face on the same rare-disease data.
 
 ### Calibration
 
@@ -137,9 +135,9 @@ Expected calibration error is 0.075 on the raw predicted success probability, an
 
 ## Data
 
-The platform is grounded in the WHO mutation catalog, second edition, supplied as the data file WHO-UCN-TB-2023.7-eng.xlsx. Real-world validation draws on the CRyPTIC consortium release, which provides whole-genome variants graded against the catalog together with measured drug-susceptibility phenotypes. All 65,588 isolates with a measured phenotype form the validation set, scored in full rather than on a held-out split. The two phenotype assays in the release, DST and UKMYC, agree on 95.6% of jointly measured isolates, which sets a label-noise floor beneath the accuracy figures above. The synthetic patient cases are transparent and deterministic given a fixed seed.
+The platform is based on the WHO mutation catalog, second edition, provided as the data file WHO-UCN-TB-2023.7-eng.xlsx. Real-world validation utilizes data from the CRyPTIC consortium release, which includes whole-genome variants graded against the catalog and associated drug-susceptibility phenotypes. The validation set consists of 65,588 isolates with measured phenotypes, scored in full rather than on a held-out split. The two phenotype assays in the release, DST and UKMYC, agree on 95.6% of the jointly measured isolates, establishing a label-noise floor below the reported accuracy. The synthetic patient cases are transparent and deterministic when using a fixed seed.
 
-The real datasets are not stored in this repository because of their size. To reproduce the results, download them into a `Datasets/` folder at the project root. The catalog file WHO-UCN-TB-2023.7-eng.xlsx comes from the World Health Organization. The CRyPTIC tables EFFECTS.parquet, PREDICTIONS.parquet, DST_MEASUREMENTS.parquet, UKMYC_PHENOTYPES.parquet, and DRUG_CODES.csv come from the CRyPTIC consortium release on Zenodo. The synthetic patient cases are produced in code and need no download. Reading the CRyPTIC parquet tables needs the pyarrow engine, which `requirements.txt` installs.
+The actual datasets are not included in this repository due to their large size. To reproduce the results, download them into a `Datasets/` folder located at the project root. The catalog file WHO-UCN-TB-2023.7-eng.xlsx is from the World Health Organization. The CRyPTIC tables, including EFFECTS.parquet, PREDICTIONS.parquet, DST_MEASUREMENTS.parquet, UKMYC_PHENOTYPES.parquet, and the file DRUG_CODES.csv, originate from the CRyPTIC consortium release on Zenodo. The synthetic patient cases are generated through code and do not require downloading. Accessing the CRyPTIC parquet tables requires the pyarrow engine, which is installed via `requirements.txt`.
 
 ## Evaluation
 
@@ -149,17 +147,17 @@ All scoring runs through a single entry point.
 python Evaluation/validation.py
 ```
 
-This runs the expert-system and case-based-reasoning validation against the live graph, skipping that arm with a printed note if the database or API is unavailable, and then runs the database-free CRyPTIC classification validation. Results are written to `validation_results.json`.
+This executes the expert-system and case-based reasoning validation on the live graph, omitting that part and printing a note if the database or API is unavailable. It then performs the database-free CRyPTIC classification validation. The results are saved to `validation_results.json`.
 
-The per-drug resistance scoring runs on its own and writes `per_drug_results.json`.
+The per-drug resistance scoring operates independently and saves its output in `per_drug_results.json`.
 
 ```bash
 python Evaluation/metrics.py
 ```
 
-The shared scoring functions, sensitivity, specificity, precision, balanced accuracy, macro-F1, the McNemar test, and the Brier score, live in `Evaluation/metrics.py`, so the tier scoring in `validation.py` and the per-drug scoring use one definition and stay comparable.
+The shared scoring functions, including sensitivity, specificity, precision, balanced accuracy, macro-F1, the McNemar test, and the Brier score, live in `Evaluation/metrics.py`, so the tier scoring in `validation.py` and the per-drug scoring use one definition and remain comparable.
 
-A separate deterministic test suite of 44 tests locks in rule-engine classification, calibration math, the read-only query guard and routing, generator determinism, and seed-graph integrity. It needs no database, API, or datasets, and runs from the project root.
+A separate deterministic test suite of 44 tests verifies rule-engine classification, calibration math, the read-only query guard and routing, generator determinism, and seed-graph integrity. It requires no database, API, or datasets and runs from the project root.
 
 ```bash
 pytest tests/test_core.py
@@ -185,15 +183,15 @@ The same suite runs in continuous integration on every push, across Python 3.10,
 
 ## Future work
 
-- Outcome validation of the case-based layer against the TB Portals dataset, which carries real treatment outcomes, to replace the synthetic cohort where the evaluation most needs real signal. Real data raises the credibility of the result rather than guaranteeing a higher one, since rare resistant cases stay scarce even in the largest real cohorts.
+- Outcome validation of the case-based layer against the TB Portals dataset, which contains real treatment outcomes, to replace the synthetic cohort where the evaluation most needs real signal. Real data increases the credibility of the result rather than guaranteeing a higher one, since rare resistant cases remain scarce even in the largest real cohorts.
 
 - A learned model trained on the full genome-wide variant table and minimum-inhibitory-concentration magnitudes, to probe how much of the genotype-phenotype discordance ceiling can be recovered beyond the curated catalog.
 
-- Scoring the regimen layer on the objective it optimizes, treatment outcome and guideline-conformant choice, rather than exact match to the labeled regimen. This is the most tractable item here, since it needs no new data and removes the metric-mismatch portion of the shortfall directly.
+- Scoring the regimen layer on the objective it optimizes, treatment outcome and guideline-conformant choice, rather than an exact match to the labeled regimen. This is the most tractable item here, since it needs no new data and directly removes the metric-mismatch portion of the shortfall.
 
-- Confidence-gated deferral, where a sparse retrieval neighborhood abstains to the rule engine and coverage is reported alongside accuracy, turning rare-class data scarcity into a calibrated behavior.
+- Confidence-gated deferral, where a sparse retrieval neighborhood defers to the rule engine and coverage is reported alongside accuracy, turning rare-class data scarcity into a calibrated behavior.
 
-- Gene-aware injectable cross-resistance. The current whole-class rule flags amikacin, kanamycin, and capreomycin together, which the per-drug table shows over-calls amikacin and capreomycin against measured DST. Keying cross-resistance on the gene, with rrs conferring broad resistance and eis leaning toward kanamycin, would recover the lost precision without changing the tier results.
+- Gene-aware injectable cross-resistance. The current whole-class rule flags amikacin, kanamycin, and capreomycin together, but the per-drug table shows over-calls for amikacin and capreomycin against measured DST. Keying cross-resistance to the gene, with rrs conferring broad resistance and eis leaning toward kanamycin, would recover the lost precision without changing the tier results.
 
 ## References
 
