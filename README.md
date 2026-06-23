@@ -183,15 +183,13 @@ The same suite runs in continuous integration on every push, across Python 3.10,
 
 ## Future work
 
-- Outcome validation of the case-based layer against the TB Portals dataset, which contains real treatment outcomes, to replace the synthetic cohort where the evaluation most needs real signal. Real data increases the credibility of the result rather than guaranteeing a higher one, since rare resistant cases remain scarce even in the largest real cohorts.
+Several directions would extend the work, and they fall into two groups, the data the system can reach and the way its layers are scored.
 
-- A learned model trained on the full genome-wide variant table and minimum-inhibitory-concentration magnitudes, to probe how much of the genotype-phenotype discordance ceiling can be recovered beyond the curated catalog.
+The most significant data gap is the synthetic case base. Validating the case-based layer with the TB Portals dataset, which includes actual treatment outcomes, would replace the cohort where real signals are most needed. Using real data enhances the credibility of the results, though it doesn't ensure higher accuracy, as resistant cases remain rare even in large real datasets. A trained model could push the results toward the other ceiling. Training such a model with the full genome-wide variant table and the minimum inhibitory concentration magnitudes would explore how much of the genotype-phenotype mismatch can be explained beyond the curated catalog.
 
-- Scoring the regimen layer on the objective it optimizes, treatment outcome and guideline-conformant choice, rather than an exact match to the labeled regimen. This is the most tractable item here, since it needs no new data and directly removes the metric-mismatch portion of the shortfall.
+The remaining instructions can enhance how the system is evaluated and how it manages rare classes. The regimen layer now receives a score based on an exact match to the labeled regimen, which penalizes it for emphasizing treatment outcomes and guideline adherence instead. This shift to the actual goal is the simplest change, as it requires no additional data and directly fixes the metric mismatch. Moreover, confidence-gated deferral enables a sparse retrieval neighborhood to defer to the rule engine and report coverage along with accuracy, turning rare-class scarcity into well-calibrated behavior. Lastly, the injectable rule's all-class form groups amikacin, kanamycin, and capreomycin, but the per-drug table indicates over-calls for amikacin and capreomycin against measured DST. Connecting cross-resistance to the gene, with rrs causing broad resistance and favoring kanamycin, could restore lost precision without changing tier results.
 
-- Confidence-gated deferral, where a sparse retrieval neighborhood defers to the rule engine and coverage is reported alongside accuracy, turning rare-class data scarcity into a calibrated behavior.
 
-- Gene-aware injectable cross-resistance. The current whole-class rule flags amikacin, kanamycin, and capreomycin together, but the per-drug table shows over-calls for amikacin and capreomycin against measured DST. Keying cross-resistance to the gene, with rrs conferring broad resistance and eis leaning toward kanamycin, would recover the lost precision without changing the tier results.
 
 ## References
 
