@@ -30,13 +30,6 @@ RESULTS = EVAL_DIR / "validation_results.json"
 EXPERT_CHECKPOINT = EVAL_DIR / ".expert_checkpoint.json"
 
 
-# The expert arm is the only one worth resuming, since each query is a paid API
-# call. The saved copy is tagged with the model that produced it and discarded
-# when that changes. Only cleanly scored queries are saved, so a query that
-# errored on a bad key or a dropped connection is retried rather than cached as
-# a failure. The other two arms recompute, keeping their numbers tied to the
-# current source rather than to whatever ran last.
-
 
 def expert_checkpoint(model, results=None):
     if results is not None:
