@@ -1,6 +1,9 @@
 # TB Drug-Resistance Decision Support System
 
-![tests](https://github.com/jsf3467v/tb-drug-resistance/actions/workflows/tests.yml/badge.svg)
+[![tests](https://github.com/jsf3467v/tb-drug-resistance/actions/workflows/tests.yml/badge.svg)](https://github.com/jsf3467v/tb-drug-resistance/actions/workflows/tests.yml)
+[![CI](https://github.com/jsf3467v/tb-drug-resistance/actions/workflows/ci.yml/badge.svg)](https://github.com/jsf3467v/tb-drug-resistance/actions/workflows/ci.yml)
+![python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)
+![license](https://img.shields.io/badge/license-MIT-green)
 
 A hybrid decision-support prototype for *Mycobacterium tuberculosis* drug resistance. It combines a WHO-grounded knowledge graph, a symbolic rule engine, case-based reasoning over synthetic patient cases, and an LLM-driven natural-language query layer. Its symbolic core is validated against real-world resistance measurements from the CRyPTIC consortium.
 
@@ -104,7 +107,7 @@ The 6,772 shared errors represent a biological upper limit, not a flaw in the de
 
 The tier validation groups categorized drugs into four resistance groups. Each drug is individually assessed for resistance or susceptibility based on the DST phenotype, using the WHO catalog as a reference. The engine and the catalog agree on 12 of 15 drugs, including both fluoroquinolones, since the catalog groups levofloxacin and moxifloxacin under a single gyrA call. The only discrepancies are with the three injectable drugs. In these cases, the engine assumes whole-class cross-resistance any mutation in this class indicates resistance to amikacin, kanamycin, and capreomycin collectively. This approach slightly increases sensitivity and decreases specificity, as injectables only partially exhibit cross-resistance in practice.
 
-For example, amikacin's precision drops from 0.834 in the catalog to 0.518 in the engine, and capreomycin's from 0.776 to 0.439. This tradeoff is recorded as a property of the heuristic rather than an implicit assumption. The scoring runs through `python Evaluation/metrics.py`, which generates `per_drug_results.json`.
+For example, amikacin's precision drops from 0.834 in the catalog to 0.518 in the engine, and capreomycin's from 0.776 to 0.439. This tradeoff is recorded as a property of the heuristic rather than an implicit assumption. The scoring runs through `python Evaluation/metrics.py`, which writes `Evaluation/per_drug_results.json`.
 
 ### Expert system
 
@@ -139,6 +142,8 @@ The platform is based on the WHO mutation catalog, second edition, provided as t
 
 The actual datasets are not included in this repository due to their large size. To reproduce the results, download them into a `Datasets/` folder located at the project root. The catalog file WHO-UCN-TB-2023.7-eng.xlsx is from the World Health Organization. The CRyPTIC tables, including EFFECTS.parquet, PREDICTIONS.parquet, DST_MEASUREMENTS.parquet, UKMYC_PHENOTYPES.parquet, and the file DRUG_CODES.csv, originate from the CRyPTIC consortium release on Zenodo. The synthetic patient cases are generated through code and do not require downloading. Accessing the CRyPTIC parquet tables requires the pyarrow engine, which is installed via `requirements.txt`.
 
+The release also ships `DATA_SCHEMA.pdf`, which documents the full set of tables, and `MUTATIONS.parquet`, which this project retains but does not read. The exploratory analysis explains why the rule engine sources its genotypes from EFFECTS instead. A seventh file, `Datasets/cryptic_features.parquet`, is built on first use and cached; delete it after replacing any source table or the scores will be computed from the old data.
+
 ## Evaluation
 
 All scoring runs through a single entry point.
@@ -147,9 +152,11 @@ All scoring runs through a single entry point.
 python Evaluation/validation.py
 ```
 
-This executes the expert-system and case-based reasoning validation on the live graph, omitting that part and printing a note if the database or API is unavailable. It then performs the database-free CRyPTIC classification validation. The results are saved to `validation_results.json`.
+This clears and rebuilds the knowledge graph, then runs the expert-system and case-based reasoning validation against it, omitting that part and printing a note if the database or API is unavailable. It then performs the database-free CRyPTIC classification validation. Because it clears the graph first, run it before the demo rather than after, since it discards any case base the app has loaded.
 
-The per-drug resistance scoring operates independently and saves its output in `per_drug_results.json`.
+Results are written to `Evaluation/validation_results.json`, replacing the committed reference run. A skipped arm keeps its previous result rather than being erased, and an `arms_this_run` field records which sections were actually recomputed.
+
+The per-drug resistance scoring operates independently and writes `Evaluation/per_drug_results.json`.
 
 ```bash
 python Evaluation/metrics.py
@@ -164,6 +171,16 @@ pytest tests/test_core.py
 ```
 
 The same suite runs in continuous integration on every push, across Python 3.10, 3.11, and 3.12.
+
+### Reproducing
+
+The project reproduces at three levels, each adding to the one before it. The test suite alone needs nothing beyond `pip install -r requirements-dev.txt`, and its 44 tests cover the rule engine, the calibration math, the query guard, and seed-graph integrity. Adding Docker and an Anthropic API key brings up the demo and the expert-system arm on the seed graph, without any dataset download. Adding the `Datasets/` folder unlocks the CRyPTIC and per-drug numbers reported above.
+
+The CRyPTIC, per-drug, and case-based arms are deterministic and reproduce exactly, seeded at 42. The expert-system arm calls a live model and is reported alongside the model that produced it, so it is the one figure expected to move. [DEPLOYME.md](DEPLOYME.md) gives the full procedure.
+
+### Exploratory analysis
+
+[EDA/EDA.ipynb](EDA/EDA.ipynb) documents the data work behind the design, including the label-noise floor, the baselines the case-based layer has to beat, the coverage gap between the PREDICTIONS and EFFECTS tables, and the composition of the seed graph. It shares `baseline_accuracy` with `validation.py`, so the baselines shown there and the ones the system is scored against are the same function rather than two similar ones.
 
 ## Limitations
 

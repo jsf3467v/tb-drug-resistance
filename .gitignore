@@ -6,12 +6,13 @@
 # Personal planning doc - delete this line if you want it public
 /Portfolio_Plan.docx
 
-# ---- Third-party data: not redistributed (see Datasets/README.md to obtain) ----
+# ---- Third-party data: not redistributed (see DEPLOYME.md section 4 to obtain) ----
 /Datasets/
 
 # ---- Secrets / environment (never commit) ----
 .env
 .env.*
+!.env.example
 *.key
 *.pem
 
@@ -33,3 +34,4 @@ venv/
 .idea/
 .vscode/
 /TB_Hybrid_Model.pptx
+Evaluation/.expert_checkpoint.json

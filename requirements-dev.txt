@@ -1,0 +1,5 @@
+# Development and test dependencies. Installs the runtime set as well, so this
+# one file is enough to clone the project and run the test suite.
+-r requirements.txt
+
+pytest>=7.0.0,<9.0

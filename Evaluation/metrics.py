@@ -7,10 +7,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "SRC"))
+EVAL_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(EVAL_DIR.parent / "SRC"))
 
 from feature_engineering import DATA, drug_map, flat
 from rule_engine import RuleEngine
+
+RESULTS = EVAL_DIR / "per_drug_results.json"
 
 
 # SCORING
@@ -162,10 +165,9 @@ def print_per_drug(summary):
 
 def main():
     summary = per_drug_scores()
-    with open("per_drug_results.json", "w") as f:
-        json.dump(summary, f, indent=2)
+    RESULTS.write_text(json.dumps(summary, indent=2))
     print_per_drug(summary)
-    print("\nResults saved to per_drug_results.json")
+    print(f"\nSaved {RESULTS.name} in {RESULTS.parent.name}")
 
 
 if __name__ == "__main__":

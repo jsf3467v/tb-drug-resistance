@@ -45,8 +45,13 @@ git clone https://github.com/jsf3467v/tb-drug-resistance.git
 cd tb-drug-resistance
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 ```
+
+`requirements.txt` carries runtime dependencies only. `requirements-dev.txt`
+pulls that file in and adds `pytest`, so the single command above covers both
+running the application and running the test suite. Install `requirements.txt`
+alone if you do not intend to run the tests.
 
 ## 4. Datasets
 
@@ -59,7 +64,23 @@ The real datasets are not stored in the repository because of their size. Downlo
 - `Datasets/UKMYC_PHENOTYPES.parquet`, the measured UKMYC phenotypes.
 - `Datasets/DRUG_CODES.csv`, the three-letter drug code map.
 
+The release also ships `DATA_SCHEMA.pdf`, documenting the full set of tables, and `MUTATIONS.parquet`. Neither is read by the pipeline. `MUTATIONS.parquet` is retained for reference because the rule engine sources its genotypes from EFFECTS instead, for reasons set out in the exploratory analysis.
+
 The WHO catalog comes from the World Health Organization. The CRyPTIC tables come from the CRyPTIC consortium release on Zenodo. The synthetic patient cases are produced in code and need no download. Reading the parquet tables needs the pyarrow engine, which `requirements.txt` installs.
+
+A seventh file, `Datasets/cryptic_features.parquet`, is not downloaded. The first
+run that needs it builds it from the four parquet tables and the drug code map,
+then reuses that copy on every later run. Nothing invalidates it
+automatically, so delete it after replacing any source table, or the scores will
+silently be computed from the old data.
+
+```bash
+rm -f Datasets/cryptic_features.parquet
+python SRC/feature_engineering.py
+```
+
+Rebuilding also prints the isolate count, the label balance, and the DST/UKMYC
+concordance the README reports.
 
 ## 5. Environment
 
@@ -79,7 +100,14 @@ python SRC/tb_ontology.py
 
 This clears the graph, applies the schema, loads the seed strains and patients, and merges the WHO catalog as 1,291 nodes from the 1,383 rows it grades 1 or 2, then prints `Database initialized successfully`. The seed strains and patients load whether or not the datasets are present, so the demo runs on the seed graph alone. The WHO catalog merge is skipped with a printed note when the catalog file is absent. The graded catalog reloads on every run, so a complete build is quick.
 
-To reproduce the validation metrics instead, run `python Evaluation/validation.py`, which builds the graph and then scores the expert-system, case-based-reasoning, and CRyPTIC arms. The per-drug resistance scoring runs separately with `python Evaluation/metrics.py` and writes `per_drug_results.json`.
+To reproduce the validation metrics instead, run `python Evaluation/validation.py`. It clears the database and rebuilds the graph before scoring the expert-system, case-based-reasoning, and CRyPTIC arms, so run it before section 7 rather than after. It discards anything the running app loaded, including the CBR case base. The per-drug resistance scoring runs separately.
+
+```bash
+python Evaluation/validation.py
+python Evaluation/metrics.py
+```
+
+Both scripts resolve their output against their own location rather than the working directory, so they write `Evaluation/validation_results.json` and `Evaluation/per_drug_results.json` no matter where you launch them from, replacing the committed reference copies. The validation report merges rather than overwrites, so an arm that was skipped keeps its previous result, and an `arms_this_run` field records which sections were recomputed. Back up the two JSON files before a rerun if you want the originals kept.
 
 ## 7. Run the application
 
@@ -94,10 +122,10 @@ From there you can ask questions in plain English and query the synthetic data, 
 ## 8. Run the tests
 
 ```bash
-pytest Evaluation/test_core.py
+pytest tests/test_core.py
 ```
 
-The suite needs no database, API, or datasets, so it runs immediately after the install step. The same suite runs in continuous integration on every push.
+The suite needs no database, API, or datasets, so it runs immediately after the install step, provided `pytest` was installed there. The same suite runs in continuous integration on every push, across Python 3.10, 3.11, and 3.12.
 
 ## Managing the container
 
@@ -112,3 +140,5 @@ docker rm memgraph       # remove once stopped
 - If the application cannot reach the database, confirm the container maps port 7687 and that `NEO4J_URI` points to `bolt://localhost:7687`.
 - If Memgraph fails to start, check the `vm.max_map_count` setting described in the Memgraph system configuration guide.
 - If the expert-system arm of the validation is skipped, the API key is missing or unreachable. The CRyPTIC classification arm still runs and writes its results.
+- If the scores do not move after you replace a dataset, the derived cache is stale. Delete `Datasets/cryptic_features.parquet` and run again.
+- If `pytest` is not found, install it as shown in section 3. It is not a runtime dependency.
