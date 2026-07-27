@@ -29,8 +29,10 @@ from cbr_cases import regimen_ceiling
 from config import EXAMPLES, SCHEMA
 from metrics import (
     RuleEngineEvaluator,
+    auc,
     balanced_accuracy,
     brier,
+    brier_constant,
     class_rates,
     macro_f1,
     mcnemar,
@@ -295,6 +297,8 @@ def aggregate_cbr_folds(all_results, baselines, k, seed=SEED):
         'calibration': {
             'ece': expected_calibration_error(predictions),
             'brier': brier(predictions),
+            'brier_constant': brier_constant(predictions),
+            'auc': auc(predictions),
             'ece_temperature_scaled': expected_calibration_error(tempered),
             'ece_platt_scaled': expected_calibration_error(platted),
             'brier_platt_scaled': brier(platted),
@@ -581,8 +585,11 @@ def print_cbr_summary(cbr):
         'ECE': f"{cal['ece']:.4f} raw, {cal['ece_platt_scaled']:.4f} platt scaled, "
                f"{cal['ece_temperature_scaled']:.4f} temperature scaled "
                f"(rejected, T={cal['temperature_mean']})",
-        'Brier': f"{cal['brier']:.4f} raw, {cal['brier_platt_scaled']:.4f} platt scaled",
+        'Brier': f"{cal['brier']:.4f} raw, {cal['brier_platt_scaled']:.4f} platt scaled, "
+                 f"{cal['brier_constant']:.4f} constant at base rate",
+        'AUC': f"{cal['auc']:.3f} raw probability",
         'baseline': f"regimen {base['regimen']:.1%}, outcome {base['outcome']:.1%}",
+        'ceiling': f"regimen {cbr['ceiling']:.1%}, from profile alone",
     })
     rows("CBR by profile",
          {profile: f"{p['accuracy']:.1%} (n={p['n']})"

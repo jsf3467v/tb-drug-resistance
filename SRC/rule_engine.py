@@ -1,5 +1,3 @@
-import re
-
 from config import FLUOROQUINOLONES, INJECTABLES
 
 HIGH_CONF_GENES = ('rpoB', 'katG', 'inhA', 'embB', 'pncA', 'gyrA')
@@ -19,29 +17,13 @@ CLASS_SPEC = (('fluoroquinolone_resistance', 'fluoroquinolone', FLUOROQUINOLONES
               ('injectable_resistance', 'injectable', INJECTABLES))
 DRUG_CLASSES = {flag: (label, sorted(members - {label}))
                 for flag, label, members in CLASS_SPEC}
-
-# The katG codon whose substitution carries high-level isoniazid resistance.
-KATG_HIGH_CONFIDENCE = 315
-
-# Leading residue or nucleotide number in an HGVS or short-form token, so
-# p.Ser315Thr and S315T both read as 315 and p.Ala3150Val does not.
-POSITION_PATTERN = re.compile(r'-?\d+')
+CLASS_LABELS = {label for _, label, _ in CLASS_SPEC}
 
 CLASS_SEVERITY = {'MDR': 1, 'PreXDR': 2, 'XDR': 3}
 
 # Conditions naming a classification read the flag the classifier set.
 CLASSIFICATION_GOALS = ('mdr', 'xdr', 'prexdr')
 
-
-def mutation_position(mut):
-    """Residue number, from the position field where the source carries one and
-    from the mutation token otherwise. The CRyPTIC path supplies no position,
-    so a substring test there would match any token containing the digits."""
-    position = str(mut.get('position', '')).strip()
-    if position.lstrip('-').isdigit():
-        return int(position)
-    found = POSITION_PATTERN.search(str(mut.get('mutation', '')))
-    return int(found.group()) if found else None
 
 # BPaLM adds a fluoroquinolone (moxifloxacin) to BPaL, so it is valid only when
 # fluoroquinolones are not contraindicated. With fluoroquinolone resistance the
@@ -199,27 +181,19 @@ class RuleEngine:
     def base_facts(self, strain_id, mutations):
         flags = ['rifampin_resistance', 'isoniazid_resistance', 'fluoroquinolone_resistance',
                  'injectable_resistance', 'mdr_classified', 'xdr_classified',
-                 'prexdr_classified', 'high_resistance', 'gyrA_mutation', 'rrs_mutation',
-                 'katG_315_mutation']
+                 'prexdr_classified']
         facts = {flag: False for flag in flags}
         facts['strain_id'] = strain_id
         facts['mutations'] = mutations
         return facts
 
     def mutation_flags(self, mutations):
+        """Resistance flag per mutation. Only flags a rule reads are derived."""
         flags = {}
         for mut in mutations:
             flag = DRUG_FLAG.get(mut.get('drug'))
             if flag:
                 flags[flag] = True
-            gene = mut.get('gene')
-            if gene == 'katG' and mutation_position(mut) == KATG_HIGH_CONFIDENCE:
-                flags['katG_315_mutation'] = True
-                flags['high_resistance'] = True
-            if gene == 'gyrA':
-                flags['gyrA_mutation'] = True
-            if gene == 'rrs':
-                flags['rrs_mutation'] = True
         return flags
 
     def forward_chain(self):
@@ -310,8 +284,10 @@ class RuleEngine:
     def add_exclusion(self, recommendations, drug, rule_id, reason):
         """First reason for excluding a drug wins. Membership is read from a set
         rather than by scanning the list, which was rescanning every entry on
-        every call and is the one quadratic step on the CRyPTIC path."""
-        if not drug or drug in self.excluded:
+        every call and is the one quadratic step on the CRyPTIC path. A source
+        row may name the class rather than a member, which sets the flag but is
+        not something a patient can be excluded from."""
+        if not drug or drug in CLASS_LABELS or drug in self.excluded:
             return
         self.excluded.add(drug)
         recommendations['exclusions'].append({'drug': drug, 'rule': rule_id, 'reason': reason})

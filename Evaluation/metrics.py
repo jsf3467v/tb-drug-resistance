@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from scipy.stats import chi2
+from scipy.stats import chi2, rankdata
 
 EVAL_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(EVAL_DIR.parent / "SRC"))
@@ -75,13 +75,45 @@ def mcnemar(b, c):
     return {'chi2': round(stat, 2), 'p_value': float(chi2.sf(stat, 1)), 'discordant': n}
 
 
+def prediction_arrays(predictions):
+    """Probability and outcome arrays from (probability, outcome) pairs."""
+    n = len(predictions)
+    probs = np.fromiter((p for p, _ in predictions), dtype=float, count=n)
+    labels = np.fromiter((bool(y) for _, y in predictions), dtype=bool, count=n)
+    return probs, labels
+
+
 def brier(predictions):
     """Mean squared error of the predicted probability against the outcome."""
     if not predictions:
         return 0.0
-    probs = np.array([p for p, _ in predictions], dtype=float)
-    labels = np.array([1.0 if y else 0.0 for _, y in predictions])
+    probs, labels = prediction_arrays(predictions)
     return round(float(np.mean((probs - labels) ** 2)), 4)
+
+
+def brier_constant(predictions):
+    """Brier score of a constant prediction at the observed base rate, which is
+    p(1-p). The floor a probability has to beat to carry any information."""
+    if not predictions:
+        return 0.0
+    _, labels = prediction_arrays(predictions)
+    base = float(labels.mean())
+    return round(base * (1.0 - base), 4)
+
+
+def auc(predictions):
+    """Area under the ROC curve, by rank sum so ties are handled. Zero when
+    either class is absent, since ranking is undefined against nothing."""
+    if not predictions:
+        return 0.0
+    probs, labels = prediction_arrays(predictions)
+    positives = int(labels.sum())
+    negatives = labels.size - positives
+    if not positives or not negatives:
+        return 0.0
+    ranks = rankdata(probs)
+    hits = ranks[labels].sum() - positives * (positives + 1) / 2
+    return round(float(hits / (positives * negatives)), 4)
 
 
 # PER-DRUG VALIDATION

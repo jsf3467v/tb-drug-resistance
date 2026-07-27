@@ -121,18 +121,6 @@ def test_prexdr_injectable_keeps_bpalm():
     assert "BPaLM" in regimen_names(out)
 
 
-def test_katg_315_matches_the_codon_not_the_digits():
-    # The CRyPTIC path supplies no position, so the old substring test flagged
-    # any katG token containing 315 anywhere.
-    real = [mutation(drug="isoniazid", gene="katG", mid="p.Ser315Thr", position="")]
-    decoy = [mutation(drug="isoniazid", gene="katG", mid="p.Ala3150Val", position="")]
-
-    assert RuleEngine(FakeOntology(real)).facts("TBX")["katG_315_mutation"]
-    assert not RuleEngine(FakeOntology(decoy)).facts("TBX")["katG_315_mutation"]
-    assert rule_engine.mutation_position({"mutation": "S315T", "position": ""}) == 315
-    assert rule_engine.mutation_position({"mutation": "c.-15C>T", "position": ""}) == -15
-
-
 def test_non_protocol_alerts_survive_classification_resolution():
     # PreXDR and MDR both fire here. Only the superseded protocol alert should
     # be dropped, not every alert that is not the winner's.
@@ -195,8 +183,6 @@ def test_facts_flags():
     assert facts["rifampin_resistance"] and facts["isoniazid_resistance"]
     assert facts["fluoroquinolone_resistance"] and facts["injectable_resistance"]
     assert facts["fluoroquinolone_or_injectable"]
-    assert facts["katG_315_mutation"] and facts["high_resistance"]
-    assert facts["gyrA_mutation"] and facts["rrs_mutation"]
 
 
 def test_facts_patient_without_mapping():
@@ -974,3 +960,122 @@ def test_formulary_is_narrower_than_the_cross_resistance_class():
 
     # injectables carry no such split, so all three are modeled
     assert INJECTABLES <= modeled
+
+def test_class_label_never_reaches_the_exclusion_list():
+    # A source row may name the class rather than a member. It must set the flag
+    # without appearing beside real drug names, since it is not prescribable.
+    muts = [mutation("rifampin", "rpoB"), mutation("isoniazid", "katG"),
+            mutation("fluoroquinolone", "gyrA")]
+    out = evaluate(muts)["recommendations"]
+    excluded = {e["drug"] for e in out["exclusions"]}
+
+    assert classify(muts) == ["PreXDR"]
+    assert not excluded & rule_engine.CLASS_LABELS
+    assert {"levofloxacin", "moxifloxacin"} <= excluded
+
+
+def test_regimen_ceiling_marginalizes_year():
+    # Year drives the regimen but is drawn independently of every retrieved
+    # feature, so conditioning on it would report a bound no scored predictor
+    # can reach.
+    from cbr_cases import PROFILE_TARGETS, REGIMEN_OPTIONS, YEAR_WEIGHTS, YEARS, regimen_ceiling
+
+    year_aware = sum(
+        share * year_weight * max(w for _, w in options) / sum(w for _, w in options)
+        for profile, share in PROFILE_TARGETS.items()
+        for year, year_weight in zip(YEARS, YEAR_WEIGHTS, strict=True)
+        if (options := REGIMEN_OPTIONS[profile][str(year)])
+    )
+    assert regimen_ceiling() < year_aware
+    assert regimen_ceiling() == 0.798
+
+
+def test_regimen_ceiling_renormalizes_a_subset():
+    from cbr_cases import regimen_ceiling
+
+    assert regimen_ceiling(["Susceptible", "MonoResistant"]) == 1.0
+    assert regimen_ceiling(["PolyResistant", "MDR", "PreXDR", "XDR"]) == 0.469
+
+
+def test_auc_handles_ties_and_a_single_class():
+    from metrics import auc, brier_constant
+
+    assert auc([]) == 0.0
+    assert auc([(0.6, True), (0.6, True)]) == 0.0
+    assert auc([(0.9, True), (0.1, False)]) == 1.0
+    assert auc([(0.5, True), (0.5, False)]) == 0.5
+    assert brier_constant([(0.3, True), (0.9, False)]) == 0.25
+
+
+def test_penalties_can_only_lower_the_success_rate():
+    # The floor comment claims every penalty is at most 1.0, so only SUCCESS_FLOOR
+    # can bind. One above 1.0 would silently make a risk factor protective.
+    import cbr_cases
+
+    named = ["HIV_PENALTY", "DIABETES_PENALTY", "PREV_TX_PENALTY", "MALE_PENALTY",
+             "HIV_DIABETES_PENALTY", "PREV_TX_MAJOR_PENALTY"]
+    banded = [cbr_cases.HIV_AGE_PENALTY[1], cbr_cases.DIABETES_AGE_PENALTY[1]]
+    penalties = [getattr(cbr_cases, n) for n in named] + banded
+    penalties += [p for _, p in cbr_cases.AGE_PENALTIES]
+
+    assert all(0.0 < p <= 1.0 for p in penalties)
+
+
+def test_age_penalty_takes_the_highest_band_cleared():
+    from cbr_cases import AGE_PENALTIES, age_penalty
+
+    (high_age, high), (low_age, low) = AGE_PENALTIES
+    assert high_age > low_age and high < low
+    assert age_penalty(high_age + 1) == high
+    assert age_penalty(low_age + 1) == low
+    assert age_penalty(low_age) == 1.0
+
+
+def test_success_rate_never_leaves_the_floor_and_base():
+    # Every modifier is a penalty, so the rate can only sit between the floor and
+    # the profile-regimen base it starts from.
+    from cbr_cases import BASE_SUCCESS, SUCCESS_FLOOR, CaseGenerator
+
+    generator = CaseGenerator(seed=42)
+    for case in case_base(500, seed=42):
+        rate = generator.success_rate(case)
+        assert SUCCESS_FLOOR <= rate <= BASE_SUCCESS[(case["profile"], case["regimen"])]
+
+
+def test_retrieval_score_never_goes_negative():
+    # retrieve() takes min_similarity as a parameter, so avg_sim can land below
+    # the constant the score is normalized against.
+    from cbr_engine import MIN_SIMILARITY, ConfidenceCalculator
+
+    confidence = ConfidenceCalculator()
+    assert confidence.retrieval_score(5, 0.06) >= 0.0
+    assert confidence.retrieval_score(1, 0.0) >= 0.0
+    assert confidence.retrieval_score(10, MIN_SIMILARITY) >= 0.0
+    assert confidence.retrieval_score(10, 1.0) == 1.0
+
+
+def test_unknown_profile_scores_as_susceptible():
+    # Documented fallback, not an accident. An unrecognized profile ranks as the
+    # least resistant tier, so a typo degrades toward Susceptible.
+    from cbr_engine import PROFILE_RANK, UNKNOWN_PROFILE_RANK, SimilarityCalculator
+
+    assert UNKNOWN_PROFILE_RANK == PROFILE_RANK["Susceptible"]
+    cases = case_base(50, seed=42)
+    calculator = SimilarityCalculator(cases)
+    base = {"age": 40, "sex": "M", "hiv_status": "negative", "region": "African",
+            "diabetes": False, "previous_treatment": False}
+
+    susceptible = calculator.scores({**base, "profile": "Susceptible"})
+    assert (calculator.scores({**base, "profile": "NotAProfile"}) == susceptible).all()
+    assert (calculator.scores(base) == susceptible).all()
+
+
+def test_gene_symbols_reached_from_two_loci():
+    # mutation_id is built from the symbol, so these collapse to one node. Pinned
+    # so the set cannot grow without a decision.
+    from collections import Counter
+
+    from who_catalog import GENE_LOCUS
+
+    shared = {symbol for symbol, n in Counter(GENE_LOCUS.values()).items() if n > 1}
+    assert shared == {"ndh", "alr", "pepQ"}

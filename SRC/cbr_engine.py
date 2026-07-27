@@ -4,6 +4,8 @@ the retrieved neighbors received together with how often those regimens
 succeeded.
 """
 
+from collections import Counter
+
 import numpy as np
 from cbr_cases import DEFAULT_CASES, DEFAULT_SEED, case_base
 
@@ -30,6 +32,11 @@ DEFAULT_REGION = 'global'
 DEFAULT_SEX = 'M'
 DEFAULT_AGE = 40
 DEFAULT_YEAR = 2022
+
+# Rank given to a profile the table does not name. It resolves to Susceptible,
+# so an unrecognized or missing profile scores as the least resistant tier
+# rather than as absent. Named here because a bare default hid that.
+UNKNOWN_PROFILE_RANK = PROFILE_RANK[DEFAULT_PROFILE]
 
 # Age gap at which age similarity reaches zero, and the credit a region
 # mismatch keeps.
@@ -96,7 +103,7 @@ class SimilarityCalculator:
         """Case base as column arrays, built in a single pass."""
         values = {name: [] for name in FEATURE_ORDER}
         for case in cases:
-            values['profile'].append(PROFILE_RANK.get(case.get('profile', DEFAULT_PROFILE), 0))
+            values['profile'].append(PROFILE_RANK.get(case.get('profile', DEFAULT_PROFILE), UNKNOWN_PROFILE_RANK))
             values['previous_treatment'].append(bool(case.get('previous_treatment', False)))
             values['hiv_status'].append(case.get('hiv_status', DEFAULT_HIV))
             values['region'].append(case.get('region', DEFAULT_REGION))
@@ -112,7 +119,7 @@ class SimilarityCalculator:
         """Weighted similarity of the query to every stored case, vectorized."""
         p = self.columns
         w = self.weights
-        q_rank = PROFILE_RANK.get(query_case.get('profile', DEFAULT_PROFILE), 0)
+        q_rank = PROFILE_RANK.get(query_case.get('profile', DEFAULT_PROFILE), UNKNOWN_PROFILE_RANK)
         age_gap = np.abs(p['age'] - query_case.get('age', DEFAULT_AGE))
         q_tx = bool(query_case.get('previous_treatment', False))
 
@@ -172,8 +179,8 @@ class SimilarityCalculator:
         return 'different'
 
     def profile_similarity(self, case1, case2):
-        r1 = PROFILE_RANK.get(case1.get('profile', DEFAULT_PROFILE), 0)
-        r2 = PROFILE_RANK.get(case2.get('profile', DEFAULT_PROFILE), 0)
+        r1 = PROFILE_RANK.get(case1.get('profile', DEFAULT_PROFILE), UNKNOWN_PROFILE_RANK)
+        r2 = PROFILE_RANK.get(case2.get('profile', DEFAULT_PROFILE), UNKNOWN_PROFILE_RANK)
         return 1.0 - abs(r1 - r2) / PROFILE_SPAN
 
     def hiv_similarity(self, case1, case2):
@@ -251,10 +258,12 @@ class ConfidenceCalculator:
         }
 
     def retrieval_score(self, n, avg_sim):
-        """Coverage and closeness, averaged. Closeness spans the range retrieval
-        admits, from MIN_SIMILARITY to 1.0, so it stays in [0, 1] unclamped."""
+        """Coverage and closeness, averaged. Closeness is measured against the
+        default cutoff, which retrieve() can be called below, so it is floored
+        at zero. Without the floor a loose retrieval reports negative
+        confidence."""
         count_score = min(1.0, n / GOOD_CASE_COUNT)
-        sim_score = (avg_sim - MIN_SIMILARITY) / (1.0 - MIN_SIMILARITY)
+        sim_score = max(0.0, (avg_sim - MIN_SIMILARITY) / (1.0 - MIN_SIMILARITY))
         return (count_score + sim_score) / 2
 
     def consistency_score(self, outcome_dist):
@@ -315,11 +324,7 @@ AGE_RISK_GAP = 8
 
 class OutcomeAnalyzer:
     def distribution(self, similar_cases):
-        dist = {}
-        for _, case in similar_cases:
-            outcome = case.get('outcome', 'unknown')
-            dist[outcome] = dist.get(outcome, 0) + 1
-        return dist
+        return Counter(case.get('outcome', 'unknown') for _, case in similar_cases)
 
     def risk_factors(self, similar_cases):
         """Features over-represented among the failures. Needs both outcomes
@@ -365,7 +370,9 @@ class CaseRetriever:
     def retrieve(self, query_case, k=DEFAULT_NEIGHBORS, min_similarity=MIN_SIMILARITY,
                  exclude_id=None):
         """Nearest cases above the similarity cutoff. Ranking discounts older
-        cases, so the similarity returned with each case is not the sort key."""
+        cases, so the similarity returned with each case is not the sort key.
+        The temporal product is not rounded, so ties are settled by the stable
+        sort and fall back to case order."""
         sims = np.round(self.calculator.scores(query_case), RANK_PRECISION)
         mask = sims >= min_similarity
         if exclude_id is not None:

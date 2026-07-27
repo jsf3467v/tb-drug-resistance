@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-07-27T00:08:37.322913",
+  "timestamp": "2026-07-27T13:28:41.593205",
   "expert_system": {
     "model": "claude-sonnet-4-6",
     "method": "execution match of generated Cypher against a gold query",
@@ -51,9 +51,9 @@
         "category": "lookup",
         "passed": false,
         "result_count": 0,
-        "time_ms": 2741.9,
+        "time_ms": 2193.8,
         "failure": "{code: Memgraph.ClientError.MemgraphError.MemgraphError} {message: Unbound variable: r.}",
-        "cypher": "MATCH (s:Strain {strain_id: 'TB001'})-[:HAS_MUTATION]->(m:Mutation)-[:CONFERS_RESISTANCE]->(d:Drug)\nRETURN d.name as drug, d.class as drug_class, collect(DISTINCT m.mutation_id) as mutations, collect(DISTINCT r.level) as resistance_levels"
+        "cypher": "MATCH (s:Strain {strain_id: 'TB001'})-[:HAS_MUTATION]->(m:Mutation)-[:CONFERS_RESISTANCE]->(d:Drug)\nRETURN d.name as drug, d.class as drug_class, collect(DISTINCT m.mutation_id) as mutations, collect(DISTINCT r.level) as resistance_levels\nORDER BY drug_class, drug"
       }
     ]
   },
@@ -109,10 +109,12 @@
       "outcome": 0.746,
       "regimen": 0.785
     },
-    "ceiling": 0.807,
+    "ceiling": 0.798,
     "calibration": {
       "ece": 0.0912,
       "brier": 0.1985,
+      "brier_constant": 0.1895,
+      "auc": 0.5622,
       "ece_temperature_scaled": 0.1851,
       "ece_platt_scaled": 0.0159,
       "brier_platt_scaled": 0.1907,

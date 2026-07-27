@@ -4,7 +4,7 @@ generated from a fixed seed and are reproducible rather than sampled.
 """
 
 import random
-from collections import Counter
+from collections import Counter, defaultdict
 
 DEFAULT_CASES = 1000
 DEFAULT_SEED = 42
@@ -145,11 +145,30 @@ DIABETES_MIDDLE = (40, 1.3)
 # treatment success rate of zero is not a claim the case base should make.
 SUCCESS_FLOOR = 0.25
 
+# Success-rate penalties, each at most 1.0 so only the floor can bind. Age bands
+# are ordered high to low and only the first one an age clears applies.
+HIV_PENALTY = 0.90
+DIABETES_PENALTY = 0.94
+PREV_TX_PENALTY = 0.85
+MALE_PENALTY = 0.98
+AGE_PENALTIES = ((60, 0.88), (50, 0.94))
+
+# Pairs that compound beyond their separate effects, applied on top of the above.
+HIV_DIABETES_PENALTY = 0.94
+HIV_AGE_PENALTY = (55, 0.92)
+PREV_TX_MAJOR_PENALTY = 0.90
+DIABETES_AGE_PENALTY = (60, 0.95)
+
 FAILURE_TYPES = ['death', 'failed', 'ltfu', 'not_evaluated']
 FAILURE_WEIGHTS = {
     'minor': [0.25, 0.17, 0.42, 0.16],
     'major': [0.47, 0.19, 0.28, 0.06]
 }
+
+
+def age_penalty(age):
+    """Penalty for the highest band the age clears, 1.0 below all of them."""
+    return next((penalty for threshold, penalty in AGE_PENALTIES if age > threshold), 1.0)
 
 
 def profile_quota(n):
@@ -284,76 +303,85 @@ class CaseGenerator:
     def outcome_modifier(self, case):
         modifier = 1.0
         if case['hiv_status'] == 'positive':
-            modifier *= 0.90
+            modifier *= HIV_PENALTY
         if case['diabetes']:
-            modifier *= 0.94
-        if case['age'] > 60:
-            modifier *= 0.88
-        elif case['age'] > 50:
-            modifier *= 0.94
+            modifier *= DIABETES_PENALTY
+        modifier *= age_penalty(case['age'])
         if case['previous_treatment']:
-            modifier *= 0.85
+            modifier *= PREV_TX_PENALTY
         if case['sex'] == 'M':
-            modifier *= 0.98
+            modifier *= MALE_PENALTY
         return modifier
 
     def interaction_modifier(self, case):
+        hiv = case['hiv_status'] == 'positive'
+        hiv_age, hiv_age_penalty = HIV_AGE_PENALTY
+        diabetes_age, diabetes_age_penalty = DIABETES_AGE_PENALTY
+
         modifier = 1.0
-        if case['hiv_status'] == 'positive' and case['diabetes']:
-            modifier *= 0.94
-        if case['hiv_status'] == 'positive' and case['age'] > 55:
-            modifier *= 0.92
+        if hiv and case['diabetes']:
+            modifier *= HIV_DIABETES_PENALTY
+        if hiv and case['age'] > hiv_age:
+            modifier *= hiv_age_penalty
         if case['previous_treatment'] and case['profile'] in MAJOR_RESISTANCE:
-            modifier *= 0.90
-        if case['diabetes'] and case['age'] > 60:
-            modifier *= 0.95
+            modifier *= PREV_TX_MAJOR_PENALTY
+        if case['diabetes'] and case['age'] > diabetes_age:
+            modifier *= diabetes_age_penalty
         return modifier
 
     def failure_type(self, profile):
         band = 'major' if profile in MAJOR_RESISTANCE else 'minor'
         return self.rng.choices(FAILURE_TYPES, weights=FAILURE_WEIGHTS[band])[0]
 
-    @staticmethod
-    def distribution_summary(cases):
-        """Shares and means over the case base, as proportions rather than
-        percentages so the figures match what the notebook computes."""
-        n = len(cases)
-        if not n:
-            return {}
 
-        shares = {key: {k: round(v / n, 3) for k, v in Counter(c[key] for c in cases).items()}
-                  for key in ('profile', 'region', 'year', 'outcome')}
-        return {
-            'total': n,
-            **shares,
-            'hiv_rate': round(sum(c['hiv_status'] == 'positive' for c in cases) / n, 3),
-            'diabetes_rate': round(sum(c['diabetes'] for c in cases) / n, 3),
-            'prev_tx_rate': round(sum(c['previous_treatment'] for c in cases) / n, 3),
-            'avg_age': round(sum(c['age'] for c in cases) / n, 1),
-            'success_rate': round(sum(c['outcome'] == 'success' for c in cases) / n, 3)
-        }
+def distribution_summary(cases):
+    """Shares and means over the case base, as proportions rather than
+    percentages so the figures match what the notebook computes."""
+    n = len(cases)
+    if not n:
+        return {}
 
-    @staticmethod
-    def profile_outcomes(cases):
-        """Success share within each profile, with the counts behind it."""
-        total = Counter(c['profile'] for c in cases)
-        success = Counter(c['profile'] for c in cases if c['outcome'] == 'success')
-        return {p: {'total': total[p], 'success': success[p],
-                    'rate': round(success[p] / total[p], 3)} for p in total}
+    shares = {key: {k: round(v / n, 3) for k, v in Counter(c[key] for c in cases).items()}
+              for key in ('profile', 'region', 'year', 'outcome')}
+    return {
+        'total': n,
+        **shares,
+        'hiv_rate': round(sum(c['hiv_status'] == 'positive' for c in cases) / n, 3),
+        'diabetes_rate': round(sum(c['diabetes'] for c in cases) / n, 3),
+        'prev_tx_rate': round(sum(c['previous_treatment'] for c in cases) / n, 3),
+        'avg_age': round(sum(c['age'] for c in cases) / n, 1),
+        'success_rate': round(sum(c['outcome'] == 'success' for c in cases) / n, 3)
+    }
 
 
-def regimen_ceiling():
-    """Best regimen accuracy any predictor can reach on this case base. The
-    generator draws the regimen from profile and year alone, so the bound is
-    the share held by the most common option, averaged over both. Reported
-    next to the baseline, since a score near it means the task is saturated
-    rather than the method strong."""
-    total = 0.0
-    for profile, share in PROFILE_TARGETS.items():
-        for year, year_weight in zip(YEARS, YEAR_WEIGHTS, strict=True):
-            options = REGIMEN_OPTIONS[profile][str(year)]
-            total += share * year_weight * max(w for _, w in options) / sum(w for _, w in options)
-    return round(total, 3)
+def profile_outcomes(cases):
+    """Success share within each profile, with the counts behind it."""
+    total = Counter(c['profile'] for c in cases)
+    success = Counter(c['profile'] for c in cases if c['outcome'] == 'success')
+    return {p: {'total': total[p], 'success': success[p],
+                'rate': round(success[p] / total[p], 3)} for p in total}
+
+
+def regimen_mix(profile):
+    """Regimen shares for one profile with year marginalized out."""
+    mix = defaultdict(float)
+    for year, year_weight in zip(YEARS, YEAR_WEIGHTS, strict=True):
+        options = REGIMEN_OPTIONS[profile][str(year)]
+        scale = year_weight / sum(w for _, w in options)
+        for regimen, weight in options:
+            mix[regimen] += weight * scale
+    return mix
+
+
+def regimen_ceiling(profiles=None):
+    """Best regimen accuracy reachable from profile alone. Year also drives the
+    regimen but is independent of every retrieved feature, so no scored predictor
+    observes it and it is marginalized. A subset renormalizes over what is kept."""
+    shares = {p: PROFILE_TARGETS[p] for p in (PROFILE_TARGETS if profiles is None else profiles)}
+    if not shares:
+        return 0.0
+    total = sum(share * max(regimen_mix(p).values()) for p, share in shares.items())
+    return round(total / sum(shares.values()), 3)
 
 
 def case_base(n=DEFAULT_CASES, seed=DEFAULT_SEED):
@@ -362,24 +390,20 @@ def case_base(n=DEFAULT_CASES, seed=DEFAULT_SEED):
 
 def main():
     cases = case_base()
-    summary = CaseGenerator.distribution_summary(cases)
+    summary = distribution_summary(cases)
 
-    print(f"Generated {summary['total']} cases")
-    for key, title in (('profile', 'Profile'), ('region', 'Region'),
-                       ('year', 'Year'), ('outcome', 'Outcome')):
-        print(f"\n{title} distribution:")
-        for name, share in sorted(summary[key].items()):
-            print(f"  {name}: {share:.1%}")
+    print(f"cases {summary['total']}  hiv {summary['hiv_rate']:.1%}  "
+          f"diabetes {summary['diabetes_rate']:.1%}  prev_tx {summary['prev_tx_rate']:.1%}  "
+          f"age {summary['avg_age']}  success {summary['success_rate']:.1%}")
+    print(f"regimen ceiling {regimen_ceiling():.1%} from profile alone")
 
-    print("\nDemographics:")
-    print(f"  HIV+: {summary['hiv_rate']:.1%}")
-    print(f"  Diabetes: {summary['diabetes_rate']:.1%}")
-    print(f"  Previous Tx: {summary['prev_tx_rate']:.1%}")
-    print(f"  Avg age: {summary['avg_age']}")
+    for key in ('profile', 'region', 'year', 'outcome'):
+        shares = "  ".join(f"{n} {s:.1%}" for n, s in sorted(summary[key].items()))
+        print(f"\n{key}\n  {shares}")
 
-    print("\nSuccess rate by profile:")
-    for profile, stats in sorted(CaseGenerator.profile_outcomes(cases).items()):
-        print(f"  {profile}: {stats['rate']:.1%} ({stats['success']}/{stats['total']})")
+    print("\nsuccess by profile")
+    for profile, stats in sorted(profile_outcomes(cases).items()):
+        print(f"  {profile:14s} {stats['rate']:6.1%}  ({stats['success']}/{stats['total']})")
 
 
 if __name__ == '__main__':

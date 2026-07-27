@@ -27,6 +27,11 @@ GENE_LOCUS = {
     'Rv1483': 'fabG1', 'Rv2459': 'ribD', 'Rv1592c': 'ndhA'
 }
 
+# Three symbols are each reached from two loci: ndh (Rv1626, Rv1854c), alr
+# (Rv3423c, Rv3232c), and pepQ (Rv1772, Rv2535c). mutation_id is built from the
+# symbol, so the same variant token under either locus collapses to one node.
+# A test pins these, so the set cannot grow unnoticed.
+
 # Grading groups 1 and 2 are associated with resistance. Groups 3 to 5 are dropped.
 GRADING_CONFIDENCE = {1: 'high', 2: 'moderate'}
 
