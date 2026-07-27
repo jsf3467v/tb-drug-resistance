@@ -47,13 +47,6 @@ RESULTS = EVAL_DIR / "validation_results.json"
 EXPERT_CHECKPOINT = EVAL_DIR / ".expert_checkpoint.json"
 
 
-# Only the expert arm journals, since each query costs an API call. The file is
-# tagged with its model, dropped when that changes, and holds only cleanly scored
-# queries, so a failed call is retried rather than kept as a failure. It is
-# written on every query and removed once a run finishes without an error, so a
-# file on disk means the last run did not complete.
-
-
 def prompt_tag(model):
     """Short digest of everything that shapes a generated query. The checkpoint
     carries it, so editing the schema or the examples discards results written
@@ -63,6 +56,10 @@ def prompt_tag(model):
 
 
 def expert_checkpoint(tag, results=None):
+    """Read or write the expert journal, the only arm worth resuming since each
+    query is a paid call. Cleanly scored queries only, so a call that failed on a
+    key or a connection is retried rather than kept as a failure. Deleted once a
+    run finishes clean, so a file on disk means the last run did not."""
     if results is not None:
         EXPERT_CHECKPOINT.write_text(json.dumps({"tag": tag, "results": results}))
         return results
