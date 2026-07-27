@@ -1,9 +1,13 @@
+"""WHO mutation catalog reader. Keeps the grading groups associated with
+resistance, maps WHO gene and drug names onto the system's spelling, and yields
+deduplicated mutations for the graph loader.
+"""
+
+import warnings
 from pathlib import Path
 
 import pandas as pd
-
 from config import DRUG_ALIASES
-
 
 GENE_LOCUS = {
     'Rv0667': 'rpoB', 'Rv1908c': 'katG', 'Rv1484': 'inhA', 'Rv3795': 'embB',
@@ -27,32 +31,39 @@ GENE_LOCUS = {
 GRADING_CONFIDENCE = {1: 'high', 2: 'moderate'}
 
 # Case-insensitive lookup from either a locus id or a gene symbol to the standard
-# gene symbol, derived once from GENE_LOCUS so normalization is a single dict hit
-# rather than a per-row scan of the table.
+# symbol, so normalization is one dict hit rather than a per-row scan.
 GENE_LOOKUP = {locus.lower(): name for locus, name in GENE_LOCUS.items()}
 GENE_LOOKUP.update({name.lower(): name for name in GENE_LOCUS.values()})
 
-
-# The WHO catalog ships in the project's Datasets folder. Resolve it relative to
-# this module (SRC/who_catalog.py -> ../Datasets/) so loading no longer depends on
-# the working directory after the project was reorganized into subfolders.
+# Resolved against this module rather than the working directory.
 DATA_DIR = Path(__file__).resolve().parent.parent / "Datasets"
 WHO_CATALOG_FILE = DATA_DIR / "WHO-UCN-TB-2023.7-eng.xlsx"
 
 
 class WHOCatalog:
+    """The WHO catalog workbook as rows the graph loader can merge."""
+
     def __init__(self, filepath=None):
         self.filepath = filepath or WHO_CATALOG_FILE
         self.data = None
 
     def read(self):
-        df = pd.read_excel(self.filepath, sheet_name=0, header=2)
-        self.data = self._clean(df)
+        # openpyxl warns about a conditional formatting extension this reader
+        # never looks at. Scoped, so importing this module stays silent about
+        # every other warning.
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="Conditional Formatting extension")
+            df = pd.read_excel(self.filepath, sheet_name=0, header=2)
+        self.data = self.graded_rows(df)
         return self.data
 
-    def _clean(self, df):
-        # Keep grading groups 1 and 2, with confidence from the grading.
+    @staticmethod
+    def graded_rows(df):
+        """Rows in grading groups 1 and 2, carrying confidence from the grading."""
         gradings = [c for c in df.columns if 'grading' in str(c).lower()]
+        if not gradings:
+            raise ValueError(f"no grading column in {list(df.columns)}")
+
         grading = next((c for c in gradings if 'final' in str(c).lower()), gradings[0])
         cols = ['drug', 'gene', 'mutation', 'variant', 'tier']
         df = df[cols + [grading]].dropna(subset=['drug', 'gene', 'tier', grading]).copy()
@@ -61,24 +72,16 @@ class WHOCatalog:
         return df.dropna(subset=['confidence'])
 
     @staticmethod
-    def mutation_id(gene, variant):
-        # Canonical gene_token id. The variant is gene-prefixed HGVS, so the token
-        # is everything after the first underscore.
-        gene = WHOCatalog._normalize_gene(gene)
-        token = str(variant).split('_', 1)[-1]
-        return f"{gene}_{token}"
-
-    @staticmethod
-    def _normalize_gene(who_gene_name):
-        """Map a WHO gene identifier (locus id or symbol) to the standard symbol."""
+    def normalize_gene(who_gene_name):
+        """Map a WHO gene identifier, locus id or symbol, to the standard symbol."""
         if pd.isna(who_gene_name):
             return None
         gene = str(who_gene_name).strip()
         return GENE_LOOKUP.get(gene.lower(), gene)
 
     @staticmethod
-    def _normalize_drug(drug_name):
-        """Normalize WHO drug names to the system's canonical spelling"""
+    def normalize_drug(drug_name):
+        """Map a WHO drug name to the system's canonical spelling."""
         if pd.isna(drug_name):
             return None
         drug = str(drug_name).lower().strip()
@@ -88,28 +91,28 @@ class WHOCatalog:
         if self.data is None:
             self.read()
 
-        # tier_1_count/tier_2_count break the loaded rows down by the WHO gene
-        # `tier` column (tier 1 = established resistance genes, tier 2 = candidate),
-        # a different axis from the grading group that _clean filters on to decide
-        # what loads. They need not sum to total_mutations, which is the row count
-        # kept after the grading-group 1/2 filter.
+        # Tiers are counted as they appear rather than against a fixed 1 and 2.
+        # On the 2023 catalog every resistance-associated row is tier 1, so a
+        # standing tier 2 line reported zero on every run. Confidence is the
+        # more useful axis, since it becomes the level on the resistance edge.
         return {
             'total_mutations': len(self.data),
             'unique_drugs': self.data['drug'].nunique(),
             'unique_genes': self.data['gene'].nunique(),
-            'tier_1_count': (self.data['tier'] == 1).sum(),
-            'tier_2_count': (self.data['tier'] == 2).sum()
+            'by_tier': self.data['tier'].astype(int).value_counts().sort_index().to_dict(),
+            'by_confidence': {level: int((self.data['confidence'] == level).sum())
+                              for level in GRADING_CONFIDENCE.values()},
         }
 
-    def _unique_mutations(self, df):
-        """Canonical ids per isolate, deduped on (mutation_id, drug)."""
-        gene = df['gene'].map(self._normalize_gene)
+    def unique_mutations(self, df):
+        """Canonical ids per isolate, deduped on mutation_id and drug."""
+        gene = df['gene'].map(self.normalize_gene)
         token = df['variant'].fillna(df['mutation']).astype(str).str.split('_', n=1).str[-1]
 
         out = pd.DataFrame({
             'mutation_id': (gene.astype(str) + '_' + token).to_numpy(),
             'gene': gene.to_numpy(),
-            'drug': df['drug'].map(self._normalize_drug).to_numpy(),
+            'drug': df['drug'].map(self.normalize_drug).to_numpy(),
             'tier': df['tier'].astype(int).to_numpy(),
             'confidence': df['confidence'].to_numpy(),
         })
@@ -117,27 +120,24 @@ class WHOCatalog:
         return out.to_dict('records')
 
     def batch_mutations(self, batch_size=1000):
-        """Yield deduplicated WHO mutations in batches"""
+        """Yield deduplicated WHO mutations in batches."""
         mutations = self.read()
-        unique = self._unique_mutations(mutations)
+        unique = self.unique_mutations(mutations)
         print(f"WHO catalog: {len(mutations)} rows -> {len(unique)} unique mutations")
 
         for i in range(0, len(unique), batch_size):
             yield unique[i:i + batch_size]
 
 
-def test():
-    catalog = WHOCatalog()
-    catalog.read()
-
-    stats = catalog.stats()
+def main():
+    stats = WHOCatalog().stats()
     print("WHO Data")
     print(f"Total mutations: {stats['total_mutations']:,}")
     print(f"Drugs: {stats['unique_drugs']}")
     print(f"Genes: {stats['unique_genes']}")
-    print(f"Tier 1: {stats['tier_1_count']:,}")
-    print(f"Tier 2: {stats['tier_2_count']:,}")
+    print("Tier: " + ", ".join(f"{t} {n:,}" for t, n in stats['by_tier'].items()))
+    print("Confidence: " + ", ".join(f"{c} {n:,}" for c, n in stats['by_confidence'].items()))
 
 
 if __name__ == '__main__':
-    test()
+    main()

@@ -21,8 +21,8 @@ Mutation:
   Properties:
     - mutation_id: string (REQUIRED, UNIQUE) - e.g., "rpoB_p.Ser450Leu"
     - position: integer - e.g., 450
-    - ref_amino_acid: string - e.g., "S"
-    - alt_amino_acid: string - e.g., "L"
+    - ref_allele: string - residue or base, e.g., "S" for p.Ser450Leu, "C" for c.-15C>T
+    - alt_allele: string - residue or base, e.g., "L" or "T"
 
 Strain:
   Properties:
@@ -45,6 +45,7 @@ Patient:
 ResistanceProfile:
   Properties:
     - type: string (REQUIRED, UNIQUE) - "Susceptible", "MonoResistant", "PolyResistant", "MDR", "PreXDR", "XDR"
+    - MonoResistant and PolyResistant count any anti-TB drug, not first-line only
     - abbreviation: string - "S", "MR", "PR", "MDR", "PreXDR", "XDR"
     - description: string
 
@@ -56,6 +57,12 @@ RELATIONSHIP TYPES
 (Mutation)-[:CONFERS_RESISTANCE]->(Drug)
   Properties:
     - level: string - "high", "moderate", or "low"
+
+(Mutation)-[:COMPENSATES]->(Drug)
+  Properties: none
+  A compensatory mutation restores fitness lost to a resistance mutation for that
+  drug. It does not confer resistance, so questions about what causes resistance
+  must use CONFERS_RESISTANCE and must not follow this edge.
 
 (Strain)-[:HAS_MUTATION]->(Mutation)
   Properties: none
@@ -145,14 +152,7 @@ Cypher: MATCH (m:Mutation)-[:IN_GENE]->(g:Gene {name: 'rpoB'})
                collect(DISTINCT d.name) as affects_drugs
         ORDER BY position
 
-Example 8: Lineage comparison
-Question: Compare resistance profiles of Beijing vs Euro-American lineages
-Cypher: MATCH (s:Strain)-[:HAS_PROFILE]->(p:ResistanceProfile)
-        WHERE s.lineage = 'Beijing' OR s.lineage = 'Euro-American'
-        RETURN s.lineage as lineage, p.type as profile, count(s) as strain_count
-        ORDER BY s.lineage, strain_count DESC
-
-Example 9: High-risk patients
+Example 8: High-risk patients
 Question: Which patients have strains resistant to first-line drugs?
 Cypher: MATCH (p:Patient)-[:INFECTED_WITH]->(s:Strain)-[:HAS_MUTATION]->(m:Mutation)
         MATCH (m)-[:CONFERS_RESISTANCE]->(d:Drug)
@@ -161,13 +161,13 @@ Cypher: MATCH (p:Patient)-[:INFECTED_WITH]->(s:Strain)-[:HAS_MUTATION]->(m:Mutat
                s.strain_id as strain, collect(DISTINCT d.name) as resistant_drugs
         ORDER BY size(resistant_drugs) DESC
 
-Example 10: Geographic distribution
+Example 9: Geographic distribution
 Question: Show resistance profiles by country
 Cypher: MATCH (s:Strain)-[:HAS_PROFILE]->(p:ResistanceProfile)
         RETURN s.country as country, p.type as profile, count(s) as count
-        ORDER BY s.country, count DESC
+        ORDER BY country, count DESC
 
-Example 11: Comparative analysis with aggregation
+Example 10: Comparative analysis with aggregation
 Question: Compare Beijing lineage to Euro-American lineage
 Cypher: MATCH (s:Strain)
         WHERE s.lineage = 'Beijing' OR s.lineage = 'Euro-American'
@@ -180,7 +180,22 @@ Cypher: MATCH (s:Strain)
 """
 
 # Drug-name variants. The WHO spelling rifampicin maps to the catalog's American
-# spelling rifampin, so a query on either name resolves to the same drug node. The
-# catalog loader and the NL layer import this map. The feature builder keeps its
-# own copy to stay standalone.
+# spelling rifampin, so a query on either name resolves to the same drug node.
 DRUG_ALIASES = {'rifampicin': 'rifampin'}
+
+# Drug classes, defined once and read by the profile in feature_engineering and
+# the class flags in rule_engine.
+#
+# These name every drug sharing a resistance mechanism, which is wider than what
+# a patient can be given, since a gyrA mutation confers cross-resistance whether
+# or not a member is still prescribed. The graph models the Group A pair alone,
+# because WHO no longer recommends ciprofloxacin or ofloxacin. The gap between
+# the two is deliberate and a test holds it.
+FIRST_LINE = {'rifampin', 'isoniazid', 'ethambutol', 'pyrazinamide'}
+FLUOROQUINOLONES = {'levofloxacin', 'moxifloxacin', 'ofloxacin', 'ciprofloxacin',
+                    'gatifloxacin', 'sitafloxacin', 'fluoroquinolone'}
+INJECTABLES = {'amikacin', 'kanamycin', 'capreomycin'}
+
+# The fluoroquinolones current guidance prescribes. The graph models these; the
+# class above scores against all of them.
+GROUP_A_FLUOROQUINOLONES = {'levofloxacin', 'moxifloxacin'}

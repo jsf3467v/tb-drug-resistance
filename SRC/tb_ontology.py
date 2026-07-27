@@ -42,8 +42,8 @@ drugs = [
 
 resistance_profiles = [
     {'type': 'Susceptible', 'abbreviation': 'S', 'description': 'No resistance detected'},
-    {'type': 'MonoResistant', 'abbreviation': 'MR', 'description': 'Resistant to one first-line drug'},
-    {'type': 'PolyResistant', 'abbreviation': 'PR', 'description': 'Resistant to >1 first-line drug (not MDR)'},
+    {'type': 'MonoResistant', 'abbreviation': 'MR', 'description': 'Resistant to one anti-TB drug'},
+    {'type': 'PolyResistant', 'abbreviation': 'PR', 'description': 'Resistant to more than one anti-TB drug, not both isoniazid and rifampin'},
     {'type': 'MDR', 'abbreviation': 'MDR', 'description': 'Resistant to at least isoniazid and rifampin'},
     {'type': 'PreXDR', 'abbreviation': 'PreXDR', 'description': 'MDR + resistant to fluoroquinolone OR injectable (pre-2021 definition)'},
     {'type': 'XDR', 'abbreviation': 'XDR', 'description': 'MDR + resistant to fluoroquinolone AND injectable (pre-2021 definition)'},
@@ -70,7 +70,7 @@ mutations = [
     {'id': 'rrs_n.1401A>G', 'gene': 'rrs', 'position': 1401, 'ref': 'A', 'alt': 'G', 'drug': 'amikacin', 'level': 'high'},
     {'id': 'rrs_n.1402C>T', 'gene': 'rrs', 'position': 1402, 'ref': 'C', 'alt': 'T', 'drug': 'amikacin', 'level': 'high'},
     {'id': 'eis_c.-10G>A', 'gene': 'eis', 'position': -10, 'ref': 'G', 'alt': 'A', 'drug': 'kanamycin', 'level': 'moderate'},
-    {'id': 'rpoC_p.Val483Gly', 'gene': 'rpoC', 'position': 483, 'ref': 'V', 'alt': 'G', 'drug': 'rifampin', 'level': 'low'},
+    {'id': 'rpoC_p.Val483Gly', 'gene': 'rpoC', 'position': 483, 'ref': 'V', 'alt': 'G', 'drug': 'rifampin', 'level': 'low', 'effect': 'compensatory'},
     {'id': 'Rv0678_c.137_138insG', 'gene': 'Rv0678', 'position': 137, 'ref': '-', 'alt': 'G', 'drug': 'bedaquiline', 'level': 'high'},
     {'id': 'rplC_p.Cys154Arg', 'gene': 'rplC', 'position': 154, 'ref': 'C', 'alt': 'R', 'drug': 'linezolid', 'level': 'high'},
 ]
@@ -243,7 +243,7 @@ transmissions = [
     {'source': 'TB001', 'target': 'TB003', 'location': 'household', 'date': '2023-12-01'},
     {'source': 'TB005', 'target': 'TB006', 'location': 'workplace', 'date': '2023-08-15'},
     {'source': 'TB011', 'target': 'TB012', 'location': 'prison', 'date': '2023-11-20'},
-    {'source': 'TB023', 'target': 'TB028', 'location': 'household', 'date': '2024-01-10'},
+    {'source': 'TB028', 'target': 'TB023', 'location': 'household', 'date': '2024-01-10'},
     {'source': 'TB026', 'target': 'TB046', 'location': 'healthcare', 'date': '2023-11-05'},
     {'source': 'TB032', 'target': 'TB035', 'location': 'household', 'date': '2024-03-22'},
     {'source': 'TB042', 'target': 'TB045', 'location': 'prison', 'date': '2024-02-14'},
@@ -264,7 +264,7 @@ KEY_SPECS = (
 
 
 class TBOntology:
-    """TB Mutations Ontology Class"""
+    """The seed graph and the read paths the interface and rule engine use."""
 
     def __init__(self, uri=None, user=None, password=None):
         uri = uri or os.getenv('NEO4J_URI', 'bolt://localhost:7687')
@@ -277,13 +277,13 @@ class TBOntology:
             max_transaction_retry_time=10.0
         )
 
-    def _batch(self, query, rows):
+    def batch(self, query, rows):
         """Run one UNWIND query over a list of row dicts in a single round trip."""
         with self.driver.session() as session:
             session.run(query, {'rows': rows})
 
     def clear_database(self):
-        """Clear all data from database"""
+        """Remove every node and relationship."""
         with self.driver.session() as session:
             session.run("MATCH (n) DETACH DELETE n")
 
@@ -300,7 +300,7 @@ class TBOntology:
                  f"CREATE CONSTRAINT IF NOT EXISTS FOR (n:{label}) REQUIRE n.{prop} IS UNIQUE"),
             ]
             for primary, fallback in pairs:
-                note = self._statement(primary, fallback)
+                note = self.statement(primary, fallback)
                 if note:
                     failed.append(note)
         if failed:
@@ -308,7 +308,7 @@ class TBOntology:
             for note in failed:
                 print(f"  {note}")
 
-    def _statement(self, primary, fallback):
+    def statement(self, primary, fallback):
         """Apply a DDL statement, trying the fallback dialect on a syntax error and
         treating an already-created result as success. Returns a short note if
         neither dialect applied, else None."""
@@ -325,102 +325,113 @@ class TBOntology:
         return f"{primary} -> {last}"
 
     def ontology_classes(self):
-        """All nodes and relationships"""
-        self._genes()
-        self._drugs()
-        self._resistance_profiles()
-        self._mutations()
-        self._strains()
-        self._patients()
-        self._relationships()
-        self._transmission()
+        """Every seed node and relationship, in dependency order."""
+        self.gene_nodes()
+        self.drug_nodes()
+        self.profile_nodes()
+        self.mutation_nodes()
+        self.strain_nodes()
+        self.patient_nodes()
+        self.strain_relationships()
+        self.transmission_edges()
 
-    def _genes(self):
+    def gene_nodes(self):
         """Gene nodes"""
-        self._batch("""
+        self.batch("""
             UNWIND $rows AS row
             MERGE (g:Gene {name: row.name})
             SET g.locus = row.locus, g.function = row.function, g.drug_target = row.drug_target
         """, genes)
 
-    def _drugs(self):
+    def drug_nodes(self):
         """Drug nodes"""
-        self._batch("""
+        self.batch("""
             UNWIND $rows AS row
             MERGE (d:Drug {name: row.name})
             SET d.class = row.class, d.abbreviation = row.abbreviation, d.mechanism = row.mechanism
         """, drugs)
 
-    def _resistance_profiles(self):
+    def profile_nodes(self):
         """Resistance profile nodes"""
-        self._batch("""
+        self.batch("""
             UNWIND $rows AS row
             MERGE (r:ResistanceProfile {type: row.type})
             SET r.abbreviation = row.abbreviation, r.description = row.description
         """, resistance_profiles)
 
-    def _mutations(self):
-        """Mutation nodes and links to genes and drugs"""
-        self._batch("""
+    def mutation_nodes(self):
+        """Mutation nodes, their gene, and their drug relationship. A compensatory
+        mutation restores fitness lost to a resistance mutation and does not itself
+        confer resistance, so it takes a separate edge. Modeling it as resistance
+        would put rpoC among the answers to what causes rifampin resistance."""
+        self.batch("""
             UNWIND $rows AS row
             MERGE (m:Mutation {mutation_id: row.id})
-            SET m.position = row.position, m.ref_amino_acid = row.ref, m.alt_amino_acid = row.alt
+            SET m.position = row.position, m.ref_allele = row.ref, m.alt_allele = row.alt
         """, mutations)
-        self._batch("""
+        self.batch("""
             UNWIND $rows AS row
             MATCH (m:Mutation {mutation_id: row.id}), (g:Gene {name: row.gene})
             MERGE (m)-[:IN_GENE]->(g)
         """, mutations)
-        self._batch("""
+
+        conferring = [m for m in mutations if m.get('effect') != 'compensatory']
+        compensating = [m for m in mutations if m.get('effect') == 'compensatory']
+        self.batch("""
             UNWIND $rows AS row
             MATCH (m:Mutation {mutation_id: row.id}), (d:Drug {name: row.drug})
             MERGE (m)-[rel:CONFERS_RESISTANCE]->(d)
             SET rel.level = row.level
-        """, mutations)
+        """, conferring)
+        self.batch("""
+            UNWIND $rows AS row
+            MATCH (m:Mutation {mutation_id: row.id}), (d:Drug {name: row.drug})
+            MERGE (m)-[:COMPENSATES]->(d)
+        """, compensating)
 
-    def _strains(self):
+    def strain_nodes(self):
         """Strain nodes"""
-        self._batch("""
+        self.batch("""
             UNWIND $rows AS row
             MERGE (s:Strain {strain_id: row.id})
             SET s.lineage = row.lineage, s.country = row.country, s.year = row.year
         """, strains)
 
-    def _patients(self):
+    def patient_nodes(self):
         """Patient nodes and their infections"""
-        self._batch("""
+        self.batch("""
             UNWIND $rows AS row
             MERGE (p:Patient {patient_id: row.id})
             SET p.age = row.age, p.sex = row.sex, p.hiv_status = row.hiv_status,
                 p.country = row.country, p.region = row.region,
                 p.diabetes = row.diabetes, p.previous_treatment = row.previous_treatment
         """, patients)
-        self._batch("""
+        self.batch("""
             UNWIND $rows AS row
             MATCH (p:Patient {patient_id: row.patient}), (s:Strain {strain_id: row.strain})
             MERGE (p)-[:INFECTED_WITH {date: date(row.date)}]->(s)
         """, patient_infections)
 
-    def _relationships(self):
+    def strain_relationships(self):
         """Relationships between strains, mutations, and profiles"""
         pairs = [{'strain': r['strain'], 'mutation': m}
                  for r in strain_data for m in r['mutations']]
         strain_profiles = [{'strain': r['strain'], 'profile': r['profile']}
                            for r in strain_data]
-        self._batch("""
+        self.batch("""
             UNWIND $rows AS row
             MATCH (s:Strain {strain_id: row.strain}), (m:Mutation {mutation_id: row.mutation})
             MERGE (s)-[:HAS_MUTATION]->(m)
         """, pairs)
-        self._batch("""
+        self.batch("""
             UNWIND $rows AS row
             MATCH (s:Strain {strain_id: row.strain}), (r:ResistanceProfile {type: row.profile})
             MERGE (s)-[:HAS_PROFILE]->(r)
         """, strain_profiles)
 
-    def _transmission(self):
+    def transmission_edges(self):
         """Transmission relationships between strains"""
-        self._batch("""
+        self.batch("""
             UNWIND $rows AS row
             MATCH (s1:Strain {strain_id: row.source}), (s2:Strain {strain_id: row.target})
             MERGE (s1)-[:TRANSMITTED_TO {location: row.location, date: date(row.date)}]->(s2)
@@ -484,7 +495,7 @@ class TBOntology:
             RETURN labels(n)[0] as type, count(n) as count
             ORDER BY type
         """
-        return self.query(query)
+        return self.read_query(query)
 
     def strain_mutations_detailed(self, strain_id):
         """Detailed mutation info for a strain"""
@@ -497,7 +508,7 @@ class TBOntology:
                    m.confidence as confidence
             ORDER BY g.name, m.position
         """
-        return self.query(query, {'strain_id': strain_id})
+        return self.read_query(query, {'strain_id': strain_id})
 
     def patient_strain_mapping(self, patient_id):
         """Map patient to their strain and profile"""
@@ -507,7 +518,7 @@ class TBOntology:
             RETURN s.strain_id as strain, r.type as profile,
                    s.lineage as lineage, s.country as country
         """
-        return self.query(query, {'patient_id': patient_id})
+        return self.read_query(query, {'patient_id': patient_id})
 
     def close(self):
         """Close database connection"""
@@ -515,7 +526,7 @@ class TBOntology:
 
 
 def main():
-    """Run all"""
+    """Rebuild the graph from the seed data, then merge the WHO catalog."""
     ontology = TBOntology()
     ontology.clear_database()
     ontology.schema()

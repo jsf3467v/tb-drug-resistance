@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from scipy.stats import chi2
 
 EVAL_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(EVAL_DIR.parent / "SRC"))
@@ -20,19 +21,28 @@ RESULTS = EVAL_DIR / "per_drug_results.json"
 
 
 def safe_ratio(num, den):
-    return round(num / den, 3) if den else 0.0
+    """Ratio, or zero when nothing was counted. Deliberately unrounded, because
+    balanced accuracy and macro F1 average these and rounding here moved their
+    last reported digit on roughly one run in seven."""
+    return num / den if den else 0.0
 
 
 def binary_rates(actual, predicted):
-    """Sensitivity, specificity, and precision from boolean actual and predicted arrays."""
+    """Sensitivity, specificity, precision, and their harmonic mean from boolean
+    actual and predicted arrays. F1 travels with the pair it combines, so the
+    per-drug and per-tier arms report it from one definition rather than two."""
     actual = np.asarray(actual, dtype=bool)
     predicted = np.asarray(predicted, dtype=bool)
     tp = int((actual & predicted).sum())
     fp = int((~actual & predicted).sum())
     fn = int((actual & ~predicted).sum())
     tn = int((~actual & ~predicted).sum())
-    return {'sensitivity': safe_ratio(tp, tp + fn), 'specificity': safe_ratio(tn, tn + fp),
-            'precision': safe_ratio(tp, tp + fp), 'n': tp + fn}
+    sensitivity = safe_ratio(tp, tp + fn)
+    precision = safe_ratio(tp, tp + fp)
+    return {'sensitivity': sensitivity, 'specificity': safe_ratio(tn, tn + fp),
+            'precision': precision,
+            'f1': safe_ratio(2 * sensitivity * precision, sensitivity + precision),
+            'n': tp + fn}
 
 
 def class_rates(truth, prediction, labels):
@@ -50,22 +60,18 @@ def balanced_accuracy(rates):
 
 def macro_f1(rates):
     """Unweighted mean F1 over classes that appear in the truth."""
-    scores = []
-    for r in rates.values():
-        if not r['n']:
-            continue
-        denom = r['sensitivity'] + r['precision']
-        scores.append(2 * r['sensitivity'] * r['precision'] / denom if denom else 0.0)
+    scores = [r['f1'] for r in rates.values() if r['n']]
     return round(sum(scores) / len(scores), 3) if scores else 0.0
 
 
 def mcnemar(b, c):
-    """Continuity-corrected McNemar test for two paired classifiers."""
+    """Continuity-corrected McNemar test for two paired classifiers. The
+    correction is floored at zero, since without it two classifiers that
+    disagree equally often return a positive statistic instead of none."""
     n = b + c
     if not n:
         return {'chi2': 0.0, 'p_value': 1.0, 'discordant': 0}
-    from scipy.stats import chi2
-    stat = (abs(b - c) - 1) ** 2 / n
+    stat = max(0.0, abs(b - c) - 1.0) ** 2 / n
     return {'chi2': round(stat, 2), 'p_value': float(chi2.sf(stat, 1)), 'discordant': n}
 
 
@@ -91,15 +97,73 @@ def dst_truth(drugs):
     return df.pivot_table(index="UNIQUEID", columns="drug", values="call", aggfunc="max")
 
 
-def catalog_truth(drugs):
-    """Per-isolate genotypic resistance call per drug from the catalog effects."""
-    eff = flat(pd.read_parquet(DATA / "EFFECTS.parquet",
-                               columns=["UNIQUEID", "DRUG", "PREDICTION"]), "UNIQUEID")
-    r = eff[eff["PREDICTION"].astype(str) == "R"].copy()
-    r["drug"] = r["DRUG"].astype(str).map(drugs)
-    r = r.dropna(subset=["drug"])
-    r["call"] = 1.0
-    return r.pivot_table(index="UNIQUEID", columns="drug", values="call", aggfunc="max")
+def catalog_calls(graded):
+    """Per-isolate genotypic resistance call per drug, from rows already graded
+    and held by the evaluator, so EFFECTS is read once for both arms."""
+    return graded[["UNIQUEID", "drug"]].assign(call=1.0).pivot_table(
+        index="UNIQUEID", columns="drug", values="call", aggfunc="max")
+
+
+class IsolateOntology:
+    """Feeds per-isolate mutations to the rule engine without a database."""
+
+    def __init__(self, mutations):
+        self.mutations = mutations
+
+    def patient_strain_mapping(self, strain_id):
+        return None
+
+    def strain_mutations_detailed(self, strain_id):
+        return self.mutations.get(strain_id, [])
+
+
+class RuleEngineEvaluator:
+    name = 'rule_engine'
+
+    def __init__(self, effects_path, drugs):
+        self.effects_path = effects_path
+        self.drugs = drugs
+        self._graded = None
+
+    def predictions(self, isolates):
+        by_isolate = self.mutations(isolates)
+        engine = RuleEngine(IsolateOntology(by_isolate))
+        calls = {isolate: self.tier(engine, isolate) for isolate in by_isolate}
+        return pd.Series(calls).reindex(isolates).fillna('below-MDR')
+
+    def graded(self):
+        """Resistance-graded rows from EFFECTS, read once. Both the tier arm and
+        the per-isolate diagnosis ask for these, and the file is large."""
+        if self._graded is None:
+            eff = flat(pd.read_parquet(self.effects_path,
+                       columns=['UNIQUEID', 'GENE', 'MUTATION', 'DRUG', 'PREDICTION']),
+                       'UNIQUEID')
+            r = eff[eff['PREDICTION'].astype(str) == 'R'].copy()
+            r['drug'] = r['DRUG'].astype(str).map(self.drugs)
+            r['gene'] = r['GENE'].astype('string').fillna('NA')
+            r['mutation'] = r['MUTATION'].astype('string').fillna('NA')
+            self._graded = r.dropna(subset=['drug'])
+        return self._graded
+
+    def mutations(self, isolates):
+        """Per-isolate mutation records. Grouping with a DataFrame per isolate
+        rebuilt one frame per group, which dominated the run at CRyPTIC scale,
+        so the rows are bucketed in a single pass over the columns instead."""
+        rows = self.graded()
+        rows = rows[rows['UNIQUEID'].isin(isolates)]
+        by_isolate = {}
+        for uid, gene, drug, mutation in zip(rows['UNIQUEID'].to_numpy(),
+                                             rows['gene'].to_numpy(),
+                                             rows['drug'].to_numpy(),
+                                             rows['mutation'].to_numpy(), strict=True):
+            by_isolate.setdefault(uid, []).append(
+                {'gene': gene, 'drug': drug, 'mutation': mutation, 'position': ''})
+        return by_isolate
+
+    @staticmethod
+    def tier(engine, isolate):
+        classes = engine.evaluate_strain(isolate)['recommendations']['classifications']
+        return classes[0]['type'] if classes else 'below-MDR'
 
 
 def exclusion_set(engine, isolate):
@@ -108,13 +172,10 @@ def exclusion_set(engine, isolate):
     return {e["drug"] for e in recs["exclusions"] if e["drug"]}
 
 
-def engine_call_sets(drugs, isolates):
+def engine_call_sets(evaluator, isolates):
     """Per-isolate set of drugs the rule engine flags as resistant."""
-    from validation import IsolateOntology, RuleEngineEvaluator
-    evaluator = RuleEngineEvaluator(DATA / "EFFECTS.parquet", drugs)
     by_isolate = evaluator.mutations(isolates)
     engine = RuleEngine(IsolateOntology(by_isolate))
-    engine.build_rules()
     return {i: exclusion_set(engine, i) for i in by_isolate}
 
 
@@ -139,28 +200,37 @@ def drug_scores(truth, call, drugs):
 
 
 def per_drug_scores():
-    """Per-drug sensitivity and specificity for the engine and catalog against DST."""
+    """Per-drug sensitivity and specificity for the engine and catalog against DST.
+    DST is measured phenotype and independent of both. The two predictions are
+    not independent of each other, which the scheme note records."""
     drugs = drug_map(DATA / "DRUG_CODES.csv")
     dst = dst_truth(drugs)
-    catalog = catalog_truth(drugs)
+    evaluator = RuleEngineEvaluator(DATA / "EFFECTS.parquet", drugs)
+    catalog = catalog_calls(evaluator.graded())
     targets = sorted(set(dst.columns) & set(catalog.columns))
-    engine = calls_frame(engine_call_sets(drugs, list(dst.index)), targets)
+    engine = calls_frame(engine_call_sets(evaluator, list(dst.index)), targets)
+    arms = {"rule_engine": drug_scores(dst, engine, targets),
+            "who_catalog": drug_scores(dst, catalog, targets)}
     return {
         "eval_isolates": int(dst.index.size),
         "drugs": targets,
-        "rule_engine": drug_scores(dst, engine, targets),
-        "who_catalog": drug_scores(dst, catalog, targets),
+        "macro_f1": {name: macro_f1(scores) for name, scores in arms.items()},
+        "scheme": "truth is measured DST. Both predictions derive from EFFECTS, so the "
+                  "engine calls are the catalog calls plus class cross-resistance and the "
+                  "two columns are not independent",
+        **arms,
     }
 
 
 def print_per_drug(summary):
     print(f"\nPer-Drug Classification ({summary['eval_isolates']:,} isolates)")
+    print(f"  {summary['scheme']}")
     for name in ("rule_engine", "who_catalog"):
-        print(f"\n{name}")
+        print(f"\n{name}  macro-F1 {summary['macro_f1'][name]:.3f}")
         for drug in summary["drugs"]:
             r = summary[name][drug]
             print(f"  {drug:14s}: sens {r['sensitivity']:.1%}  spec {r['specificity']:.1%}  "
-                  f"ppv {r['precision']:.1%}  (R={r['n']})")
+                  f"ppv {r['precision']:.1%}  F1 {r['f1']:.3f}  (R={r['n']})")
 
 
 def main():

@@ -1,20 +1,13 @@
-
-# Runtime dependencies for the TB drug-resistance hybrid system.
-# Lower bounds reflect the APIs the code actually uses:
-#   neo4j>=5        -> session.execute_read (read_query)
-#   streamlit>=1.27 -> st.rerun
-#   openpyxl        -> backend for pandas read_excel on the WHO .xlsx
-# Upper bounds cap the stable libraries to the major version line the
-# project was validated against, so a fresh install stays on a compatible
-# release. anthropic is pre-1.0 and the most version-sensitive of these.
+# Runtime dependencies. Floors are the oldest release that installs and runs on
+# Python 3.10 through 3.12, the range the test workflow covers.
 streamlit>=1.27.0,<2.0
 neo4j>=5.0.0,<6.0
-anthropic>=0.30.0,<1.0
-pandas>=1.5.0,<3.0
-numpy>=1.24.0,<2.0
-scipy>=1.10.0,<2.0
+anthropic>=0.40.0,<1.0  # earlier releases install, then raise against httpx 0.28
+pandas>=2.1.1,<4.0
+numpy>=1.26.0,<3.0
+scipy>=1.11.2,<2.0
 python-dotenv>=1.0.0,<2.0
 openpyxl>=3.1.0,<4.0
-pyarrow>=12.0.0
- 
-# Tests only (not needed at runtime): pytest>=7.0.0,<9.0
+pyarrow>=14.0.0
+
+# Tests only: pytest>=7.0.0,<9.0

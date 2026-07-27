@@ -17,187 +17,222 @@
     "rifampin",
     "streptomycin"
   ],
+  "macro_f1": {
+    "rule_engine": 0.588,
+    "who_catalog": 0.611
+  },
+  "scheme": "truth is measured DST. Both predictions derive from EFFECTS, so the engine calls are the catalog calls plus class cross-resistance and the two columns are not independent",
   "rule_engine": {
     "amikacin": {
-      "sensitivity": 0.685,
-      "specificity": 0.946,
-      "precision": 0.518,
+      "sensitivity": 0.6852686308492201,
+      "specificity": 0.9455921033188521,
+      "precision": 0.5178103719224725,
+      "f1": 0.589885126062957,
       "n": 2885
     },
     "bedaquiline": {
-      "sensitivity": 0.4,
-      "specificity": 0.992,
-      "precision": 0.715,
+      "sensitivity": 0.40036563071297987,
+      "specificity": 0.9922761177561019,
+      "precision": 0.7145187601957586,
+      "f1": 0.5131810193321616,
       "n": 1094
     },
     "capreomycin": {
-      "sensitivity": 0.724,
-      "specificity": 0.911,
-      "precision": 0.439,
+      "sensitivity": 0.7240390131956397,
+      "specificity": 0.9114528975556165,
+      "precision": 0.43910925539318024,
+      "f1": 0.5466753303010613,
       "n": 1743
     },
     "clofazimine": {
-      "sensitivity": 0.057,
-      "specificity": 0.993,
-      "precision": 0.27,
+      "sensitivity": 0.05742049469964664,
+      "specificity": 0.9929580282479095,
+      "precision": 0.2697095435684647,
+      "f1": 0.09468317552804079,
       "n": 1132
     },
     "delamanid": {
-      "sensitivity": 0.056,
-      "specificity": 0.999,
+      "sensitivity": 0.056451612903225805,
+      "specificity": 0.9989860349357054,
       "precision": 0.56,
+      "f1": 0.10256410256410257,
       "n": 496
     },
     "ethambutol": {
-      "sensitivity": 0.718,
-      "specificity": 0.93,
-      "precision": 0.682,
+      "sensitivity": 0.7177719413438389,
+      "specificity": 0.9302002097870206,
+      "precision": 0.6818087318087318,
+      "f1": 0.6993282865977183,
       "n": 9138
     },
     "ethionamide": {
-      "sensitivity": 0.564,
-      "specificity": 0.937,
-      "precision": 0.667,
+      "sensitivity": 0.5644749754661432,
+      "specificity": 0.9371585893458025,
+      "precision": 0.6666666666666666,
+      "f1": 0.6113295780635561,
       "n": 5095
     },
     "isoniazid": {
-      "sensitivity": 0.737,
-      "specificity": 0.987,
-      "precision": 0.975,
+      "sensitivity": 0.7374041272935293,
+      "specificity": 0.9874823841498798,
+      "precision": 0.974628955474657,
+      "f1": 0.8395812225599459,
       "n": 23599
     },
     "kanamycin": {
-      "sensitivity": 0.582,
-      "specificity": 0.979,
-      "precision": 0.776,
+      "sensitivity": 0.5815675261679857,
+      "specificity": 0.9794121333667586,
+      "precision": 0.7761499148211244,
+      "f1": 0.6649153531815528,
       "n": 3917
     },
     "levofloxacin": {
-      "sensitivity": 0.655,
-      "specificity": 0.979,
-      "precision": 0.859,
+      "sensitivity": 0.6553894571203777,
+      "specificity": 0.9790316820570379,
+      "precision": 0.8587628865979381,
+      "f1": 0.7434181169120927,
       "n": 3813
     },
     "linezolid": {
-      "sensitivity": 0.233,
-      "specificity": 0.998,
-      "precision": 0.691,
+      "sensitivity": 0.23304347826086957,
+      "specificity": 0.9978592071930639,
+      "precision": 0.6907216494845361,
+      "f1": 0.3485045513654096,
       "n": 575
     },
     "moxifloxacin": {
-      "sensitivity": 0.702,
-      "specificity": 0.952,
-      "precision": 0.713,
+      "sensitivity": 0.7017718494923353,
+      "specificity": 0.9521418219810589,
+      "precision": 0.7128412537917088,
+      "f1": 0.707263242375602,
       "n": 5023
     },
     "pyrazinamide": {
-      "sensitivity": 0.739,
-      "specificity": 0.972,
-      "precision": 0.853,
+      "sensitivity": 0.738931577021588,
+      "specificity": 0.9720950774913676,
+      "precision": 0.8531896915927334,
+      "f1": 0.7919607843137254,
       "n": 5466
     },
     "rifampin": {
-      "sensitivity": 0.782,
-      "specificity": 0.98,
-      "precision": 0.946,
+      "sensitivity": 0.782062252647342,
+      "specificity": 0.9798887566490977,
+      "precision": 0.9464112355187366,
+      "f1": 0.8564233213271252,
       "n": 18698
     },
     "streptomycin": {
-      "sensitivity": 0.605,
-      "specificity": 0.953,
-      "precision": 0.882,
+      "sensitivity": 0.6046655912644249,
+      "specificity": 0.9528110998699234,
+      "precision": 0.8818313427433948,
+      "f1": 0.7174089068825911,
       "n": 8059
     }
   },
   "who_catalog": {
     "amikacin": {
-      "sensitivity": 0.663,
-      "specificity": 0.989,
-      "precision": 0.834,
+      "sensitivity": 0.6634315424610052,
+      "specificity": 0.9887696899843367,
+      "precision": 0.8343504795117699,
+      "f1": 0.7391388298899402,
       "n": 2885
     },
     "bedaquiline": {
-      "sensitivity": 0.4,
-      "specificity": 0.992,
-      "precision": 0.715,
+      "sensitivity": 0.40036563071297987,
+      "specificity": 0.9922761177561019,
+      "precision": 0.7145187601957586,
+      "f1": 0.5131810193321616,
       "n": 1094
     },
     "capreomycin": {
-      "sensitivity": 0.682,
-      "specificity": 0.981,
-      "precision": 0.776,
+      "sensitivity": 0.6815834767641996,
+      "specificity": 0.9811590222466355,
+      "precision": 0.7759634225996082,
+      "f1": 0.725717776420281,
       "n": 1743
     },
     "clofazimine": {
-      "sensitivity": 0.057,
-      "specificity": 0.993,
-      "precision": 0.27,
+      "sensitivity": 0.05742049469964664,
+      "specificity": 0.9929580282479095,
+      "precision": 0.2697095435684647,
+      "f1": 0.09468317552804079,
       "n": 1132
     },
     "delamanid": {
-      "sensitivity": 0.056,
-      "specificity": 0.999,
+      "sensitivity": 0.056451612903225805,
+      "specificity": 0.9989860349357054,
       "precision": 0.56,
+      "f1": 0.10256410256410257,
       "n": 496
     },
     "ethambutol": {
-      "sensitivity": 0.718,
-      "specificity": 0.93,
-      "precision": 0.682,
+      "sensitivity": 0.7177719413438389,
+      "specificity": 0.9302002097870206,
+      "precision": 0.6818087318087318,
+      "f1": 0.6993282865977183,
       "n": 9138
     },
     "ethionamide": {
-      "sensitivity": 0.564,
-      "specificity": 0.937,
-      "precision": 0.667,
+      "sensitivity": 0.5644749754661432,
+      "specificity": 0.9371585893458025,
+      "precision": 0.6666666666666666,
+      "f1": 0.6113295780635561,
       "n": 5095
     },
     "isoniazid": {
-      "sensitivity": 0.737,
-      "specificity": 0.987,
-      "precision": 0.975,
+      "sensitivity": 0.7374041272935293,
+      "specificity": 0.9874823841498798,
+      "precision": 0.974628955474657,
+      "f1": 0.8395812225599459,
       "n": 23599
     },
     "kanamycin": {
-      "sensitivity": 0.58,
-      "specificity": 0.984,
-      "precision": 0.815,
+      "sensitivity": 0.5795251467960174,
+      "specificity": 0.9838305339684131,
+      "precision": 0.8147882268485284,
+      "f1": 0.6773086677607041,
       "n": 3917
     },
     "levofloxacin": {
-      "sensitivity": 0.655,
-      "specificity": 0.979,
-      "precision": 0.859,
+      "sensitivity": 0.6553894571203777,
+      "specificity": 0.9790316820570379,
+      "precision": 0.8587628865979381,
+      "f1": 0.7434181169120927,
       "n": 3813
     },
     "linezolid": {
-      "sensitivity": 0.233,
-      "specificity": 0.998,
-      "precision": 0.691,
+      "sensitivity": 0.23304347826086957,
+      "specificity": 0.9978592071930639,
+      "precision": 0.6907216494845361,
+      "f1": 0.3485045513654096,
       "n": 575
     },
     "moxifloxacin": {
-      "sensitivity": 0.702,
-      "specificity": 0.952,
-      "precision": 0.713,
+      "sensitivity": 0.7017718494923353,
+      "specificity": 0.9521418219810589,
+      "precision": 0.7128412537917088,
+      "f1": 0.707263242375602,
       "n": 5023
     },
     "pyrazinamide": {
-      "sensitivity": 0.739,
-      "specificity": 0.972,
-      "precision": 0.853,
+      "sensitivity": 0.738931577021588,
+      "specificity": 0.9720950774913676,
+      "precision": 0.8531896915927334,
+      "f1": 0.7919607843137254,
       "n": 5466
     },
     "rifampin": {
-      "sensitivity": 0.782,
-      "specificity": 0.98,
-      "precision": 0.946,
+      "sensitivity": 0.782062252647342,
+      "specificity": 0.9798887566490977,
+      "precision": 0.9464112355187366,
+      "f1": 0.8564233213271252,
       "n": 18698
     },
     "streptomycin": {
-      "sensitivity": 0.605,
-      "specificity": 0.953,
-      "precision": 0.882,
+      "sensitivity": 0.6046655912644249,
+      "specificity": 0.9528110998699234,
+      "precision": 0.8818313427433948,
+      "f1": 0.7174089068825911,
       "n": 8059
     }
   }

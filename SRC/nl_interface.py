@@ -1,12 +1,14 @@
-import anthropic
-from anthropic import Anthropic
 import json
 import os
 import re
 import time
-from config import SCHEMA, EXAMPLES, DRUG_ALIASES
+
+import anthropic
+from anthropic import Anthropic
+from cbr_cases import DEFAULT_CASES
+from cbr_engine import DEFAULT_NEIGHBORS, CaseStore, CBREngine
+from config import DRUG_ALIASES, EXAMPLES, SCHEMA
 from rule_engine import RuleEngine
-from cbr_engine import CBREngine, CaseStore
 
 MODEL = "claude-sonnet-4-6"
 REQUEST_TIMEOUT = 30.0
@@ -34,7 +36,7 @@ CLASSIFICATION_KEYWORDS = (
 CLASSIFY_WORDS = ('classification', 'classify', 'profile', 'type')
 RISK_KEYWORDS = ('risk', 'likely', 'probability', 'chance', 'predict')
 
-_RETRYABLE = tuple(c for c in (
+RETRYABLE = tuple(c for c in (
     getattr(anthropic, 'APIConnectionError', None),
     getattr(anthropic, 'APITimeoutError', None),
     getattr(anthropic, 'RateLimitError', None),
@@ -70,19 +72,29 @@ def unquoted(cypher):
 
 
 AGGREGATES = ('collect(', 'count(', 'sum(', 'avg(', 'min(', 'max(')
+RETURN_CLAUSE = re.compile(r'\breturn\b', re.IGNORECASE)
 
 
 def runnable_cypher(cypher):
-    """Remove a trailing ORDER BY that sorts on a raw variable when the RETURN
-    aggregates. Memgraph keeps only the projected aliases in scope after an
-    aggregate, so a key like s.year is unbound and the query fails to run. Order
-    never changes the result set, so dropping the clause is answer preserving."""
+    """Remove a trailing ORDER BY that sorts on a raw variable when the final
+    RETURN aggregates. Memgraph keeps only the projected aliases in scope after
+    an aggregate, so a key like s.year is unbound and the query fails to run.
+    Only the last clause is read, because an aggregate consumed by an earlier
+    WITH leaves the RETURN unaffected and its ORDER BY legal. Order never
+    changes the result set, so dropping the clause is answer preserving."""
+    clauses = [m.start() for m in RETURN_CLAUSE.finditer(cypher)]
+    if not clauses:
+        return cypher
+
     low = cypher.lower()
-    if not any(agg in low for agg in AGGREGATES):
+    final = clauses[-1]
+    if not any(agg in low[final:] for agg in AGGREGATES):
         return cypher
+
     cut = low.rfind('order by')
-    if cut == -1 or '.' not in cypher[cut:]:
+    if cut < final or '.' not in cypher[cut:]:
         return cypher
+
     limit = low.find('limit', cut)
     tail = ' ' + cypher[limit:].strip() if limit != -1 else ''
     return (cypher[:cut].rstrip() + tail).rstrip()
@@ -100,16 +112,18 @@ class NLInterface:
         self.schema = SCHEMA
         self.examples = EXAMPLES
         self.rule_engine = RuleEngine(ontology)
-        self.rule_engine.build_rules()
         self.cbr_engine = None
         self.cbr_cases = []
         self.last_question = ""
         self._cache = {}
 
-    def _complete(self, prompt, max_tokens, temperature):
+    def model_text(self, prompt, max_tokens, temperature):
+        """Cached model call. Backoff runs between attempts only, since a sleep
+        after the last one delays the failure without buying another try."""
         key = (prompt, max_tokens, temperature)
         if key in self._cache:
             return self._cache[key]
+
         last = None
         for attempt in range(MAX_RETRIES):
             try:
@@ -119,17 +133,18 @@ class NLInterface:
                 text = first_text(message).strip()
                 self._cache[key] = text
                 return text
-            except _RETRYABLE as exc:
+            except RETRYABLE as exc:
                 last = exc
-                time.sleep(BACKOFF_BASE * (2 ** attempt))
-        raise LLMUnavailable(f"model unreachable after {MAX_RETRIES} attempts: {last}")
+                if attempt + 1 < MAX_RETRIES:
+                    time.sleep(BACKOFF_BASE * (2 ** attempt))
+        raise LLMUnavailable(f"model unreachable after {MAX_RETRIES} attempts") from last
 
     def generate_cypher(self, user_question):
         user_question = user_question.rstrip('.?!,;')
-        cypher = self._complete(self._cypher_prompt(user_question), max_tokens=1024, temperature=0)
-        return runnable_cypher(canonical_drugs(self._strip_fences(cypher)))
+        cypher = self.model_text(self.cypher_prompt(user_question), max_tokens=1024, temperature=0)
+        return runnable_cypher(canonical_drugs(self.unfenced(cypher)))
 
-    def _cypher_prompt(self, user_question):
+    def cypher_prompt(self, user_question):
         return f"""You are a Cypher query expert for a TB drug resistance database.
 
 DATABASE SCHEMA:
@@ -152,7 +167,7 @@ USER QUESTION: {user_question}
 
 CYPHER QUERY:"""
 
-    def _strip_fences(self, cypher):
+    def unfenced(self, cypher):
         cypher = cypher.strip()
         if cypher.startswith("```"):
             lines = cypher.split("\n")
@@ -162,14 +177,19 @@ CYPHER QUERY:"""
         return cypher.strip()
 
     def validate_cypher(self, cypher):
-        match = WRITE_PATTERN.search(cypher.upper())
+        """Every check reads the query with string literals removed. A write
+        keyword inside a literal is a value, not a clause, and reading the raw
+        text here while the delimiter checks read the stripped text let the two
+        halves of one guard disagree about what the query says."""
+        bare = unquoted(cypher)
+
+        match = WRITE_PATTERN.search(bare.upper())
         if match:
             return False, f"Query contains forbidden keyword: {match.group(1)}"
 
         if not cypher.strip().upper().startswith(READ_STARTS) and 'UNANSWERABLE' not in cypher:
             return False, "Query must start with a read clause"
 
-        bare = unquoted(cypher)
         if bare.count('(') != bare.count(')'):
             return False, "Unbalanced parentheses"
 
@@ -179,10 +199,10 @@ CYPHER QUERY:"""
         return True, None
 
     def execute_query(self, cypher, parameters=None):
-        try:
-            return self.ontology.read_query(cypher, parameters)
-        except Exception as e:
-            raise Exception(f"Query execution error: {str(e)}")
+        """Read-only execution of a generated query. Driver errors propagate as
+        they are, since the caller already labels them and re-raising a bare
+        Exception here only hid the type behind a second copy of the message."""
+        return self.ontology.read_query(cypher, parameters)
 
     def needs_rules(self, question):
         q = question.lower()
@@ -276,6 +296,10 @@ CYPHER QUERY:"""
         return self.strain_from_mutations(results)
 
     def rule_recommend(self, results, question_type=False):
+        """Rule engine output for the strain behind these results. needs_rules
+        returns the goal name, which is what backward chaining proves, so the
+        question type is passed through. Without one the engine derives
+        everything in a single forward pass."""
         if not results:
             return None
 
@@ -283,17 +307,9 @@ CYPHER QUERY:"""
         if not strain_id:
             return None
 
-        mode = 'forward'
-        goal = None
-
-        if question_type == 'treatment':
-            mode = 'backward'
-            goal = 'treatment'
-        elif question_type == 'classification':
-            mode = 'backward'
-            goal = 'classification'
-
-        result = self.rule_engine.evaluate_strain(strain_id, mode=mode, goal=goal)
+        goal = question_type or None
+        result = self.rule_engine.evaluate_strain(
+            strain_id, mode='backward' if goal else 'forward', goal=goal)
 
         return {
             'strain': strain_id,
@@ -304,7 +320,7 @@ CYPHER QUERY:"""
 
     def init_cbr(self):
         store = CaseStore(self.ontology)
-        self.cbr_cases = store.retrieve_cases(limit=1000)
+        self.cbr_cases = store.retrieve_cases(limit=DEFAULT_CASES)
         if self.cbr_cases:
             self.cbr_engine = CBREngine(self.cbr_cases)
         return len(self.cbr_cases)
@@ -366,26 +382,29 @@ CYPHER QUERY:"""
             'previous_treatment': bool(patient_data.get('previous_treatment'))
         }
 
-        return self.cbr_engine.recommend(query_case, k=10)
+        analysis = self.cbr_engine.recommend(query_case, k=DEFAULT_NEIGHBORS)
+        analysis['explained_cases'] = self.cbr_engine.explanations(
+            query_case, analysis['similar_cases'])
+        return analysis
 
-    def rule_output(self, classifications, exclusions, regimens, monitoring, alerts):
+    def rule_lines(self, classifications, exclusions, regimens, monitoring, alerts):
         """Format rule engine recommendations"""
         output = []
-        output += self._fmt_classifications(classifications)
-        output += self._fmt_regimens(regimens)
-        output += self._fmt_exclusions(exclusions)
-        output += self._fmt_monitoring(monitoring)
-        output += self._fmt_alerts(alerts)
+        output += self.classification_lines(classifications)
+        output += self.regimen_lines(regimens)
+        output += self.exclusion_lines(exclusions)
+        output += self.monitoring_lines(monitoring)
+        output += self.alert_lines(alerts)
         return '\n'.join(output) if output else "No specific recommendations generated."
 
-    def _fmt_classifications(self, classifications):
+    def classification_lines(self, classifications):
         if not classifications:
             return []
         lines = ["Classifications:"]
         lines += [f"  - {c['type']} (Rule: {c['rule']}, Source: {c['source']})" for c in classifications]
         return lines
 
-    def _fmt_regimens(self, regimens):
+    def regimen_lines(self, regimens):
         if not regimens:
             return []
         lines = ["\nTreatment Regimens:"]
@@ -394,14 +413,14 @@ CYPHER QUERY:"""
             lines.append(f"    Duration: {r['duration']} (Rule: {r['rule']})")
         return lines
 
-    def _fmt_exclusions(self, exclusions):
+    def exclusion_lines(self, exclusions):
         if not exclusions:
             return []
         lines = ["\nDrug Exclusions:"]
         lines += [f"  - Exclude {e['drug']} (Reason: {e['reason']}, Rule: {e['rule']})" for e in exclusions]
         return lines
 
-    def _fmt_monitoring(self, monitoring):
+    def monitoring_lines(self, monitoring):
         if not monitoring:
             return []
         lines = ["\nMonitoring Required:"]
@@ -411,7 +430,7 @@ CYPHER QUERY:"""
                 lines.append(f"    Threshold: {m['threshold']}")
         return lines
 
-    def _fmt_alerts(self, alerts):
+    def alert_lines(self, alerts):
         if not alerts:
             return []
         lines = ["\nClinical Alerts:"]
@@ -424,7 +443,7 @@ CYPHER QUERY:"""
             return ""
 
         recs = rule_output['recommendations']
-        formatted = self.rule_output(
+        formatted = self.rule_lines(
             recs.get('classifications', []), recs.get('exclusions', []),
             recs.get('regimens', []), recs.get('monitoring', []), recs.get('alerts', []))
 
@@ -457,13 +476,13 @@ Top Recommendations: {top_regimens}
         if not results:
             return "No results found for this query. The database may not contain relevant information for this question."
 
-        prompt = self._format_prompt(user_question, cypher, results, rule_output, cbr_output)
+        prompt = self.answer_prompt(user_question, cypher, results, rule_output, cbr_output)
         try:
-            return self._complete(prompt, max_tokens=2048, temperature=0.3)
+            return self.model_text(prompt, max_tokens=2048, temperature=0.3)
         except LLMUnavailable:
-            return self._fallback_summary(results, rule_output, cbr_output)
+            return self.fallback_summary(results, rule_output, cbr_output)
 
-    def _format_prompt(self, user_question, cypher, results, rule_output, cbr_output):
+    def answer_prompt(self, user_question, cypher, results, rule_output, cbr_output):
         display_results = results[:20] if len(results) > 20 else results
         rule_text = self.rule_context(rule_output)
         cbr_text = self.cbr_context(cbr_output)
@@ -485,12 +504,13 @@ Provide:
 2. Key findings from the data
 3. Clinical significance if relevant
 4. If expert system analysis provided, integrate the recommendations naturally. Treat every drug listed under exclusions as contraindicated - never present an excluded drug as an available or recommended treatment option
-5. If case-based reasoning provided, mention similar case evidence
-6. Note if results were truncated (showing first 20 of {len(results)})
+5. A drug with no resistance mutation in the graph is untested, not susceptible. Roughly a fifth of measured resistance carries no graded mutation, so never describe such a drug as susceptible, safe, or an available option, and do not list them as alternatives
+6. If case-based reasoning provided, mention similar case evidence
+7. Note if results were truncated (showing first 20 of {len(results)})
 
-Keep the response concise and professional. Use bullet points for lists."""
+Use plain text with no emoji and no decorative symbols. Keep the response concise and professional. Use bullet points for lists."""
 
-    def _fallback_summary(self, results, rule_output, cbr_output):
+    def fallback_summary(self, results, rule_output, cbr_output):
         parts = [f"Results returned: {len(results)}. (Model formatting unavailable; showing structured findings.)"]
         rule_text = self.rule_context(rule_output).strip()
         cbr_text = self.cbr_context(cbr_output).strip()

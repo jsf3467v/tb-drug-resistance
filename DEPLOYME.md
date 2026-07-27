@@ -8,6 +8,8 @@ Memgraph operates in Docker, while the application and evaluation scripts run on
 - Docker.
 - Git.
 
+The version floors in `requirements.txt` are the oldest release of each dependency that installs and runs across all three Python versions, verified by building an environment at every floor and running the suite. Two are set by a working install rather than by an available package. Older pyarrow releases ship no wheel for Python 3.12, and anthropic releases before 0.40.0 install cleanly and then fail when the client is constructed, because they pass an argument that httpx removed.
+
 The `memgraph/memgraph-mage` image runs natively on Apple Silicon, so an M-series Mac needs no extra configuration.
 
 ## 1. Start Memgraph
@@ -92,22 +94,40 @@ cp .env.example .env
 
 Set `ANTHROPIC_API_KEY` for the natural-language interface. The graph variables default to the local no-auth instance, so `NEO4J_USER` and `NEO4J_PASSWORD` can stay empty and `NEO4J_URI` can stay at `bolt://localhost:7687`.
 
-## 6. Build the graph
+## 6. Build the graph and score the system
+
+Two paths lead here, and which one you take decides whether section 6.1 is needed at all.
+
+### 6.1 Demo only
+
+Build the graph directly when you want the application without the scores.
 
 ```bash
 python SRC/tb_ontology.py
 ```
 
-This clears the graph, applies the schema, loads the seed strains and patients, and merges the WHO catalog as 1,291 nodes from the 1,383 rows it grades 1 or 2, then prints `Database initialized successfully`. The seed strains and patients load whether or not the datasets are present, so the demo runs on the seed graph alone. The WHO catalog merge is skipped with a printed note when the catalog file is absent. The graded catalog reloads on every run, so a complete build is quick.
+This clears the graph, applies the schema, loads the seed strains and patients, and merges the WHO catalog as 1,291 nodes from the 1,383 rows it grades 1 or 2, then prints `Database initialized successfully`. The seed strains and patients load whether or not the datasets are present, so the demo runs on the seed graph alone. The WHO catalog merge is skipped with a printed note when the catalog file is absent. The graded catalog reloads on every run, so a complete build stays quick.
 
-To reproduce the validation metrics instead, run `python Evaluation/validation.py`. It clears the database and rebuilds the graph before scoring the expert-system, case-based-reasoning, and CRyPTIC arms, so run it before section 7 rather than after. It discards anything the running app loaded, including the CBR case base. The per-drug resistance scoring runs separately.
+### 6.2 Full run
+
+`validation.py` rebuilds the graph itself, performing the same clear, schema, seed, and catalog merge, so running section 6.1 first is work it immediately discards. Take the order below instead, which puts the cheap checks ahead of the step that spends money.
 
 ```bash
-python Evaluation/validation.py
-python Evaluation/metrics.py
+python SRC/who_catalog.py           # the catalog parses, writes nothing
+python SRC/cbr_cases.py             # the generator runs, writes nothing
+python SRC/feature_engineering.py   # rebuilds the label cache
+python -m pytest tests/ -q          # 77 tests, no database and no API
+python Evaluation/metrics.py        # per-drug scores, no database and no API
+python Evaluation/validation.py     # rebuilds the graph, calls the API
 ```
 
-Both scripts resolve their output against their own location rather than the working directory, so they write `Evaluation/validation_results.json` and `Evaluation/per_drug_results.json` no matter where you launch them from, replacing the committed reference copies. The validation report merges rather than overwrites, so an arm that was skipped keeps its previous result, and an `arms_this_run` field records which sections were recomputed. Back up the two JSON files before a rerun if you want the originals kept.
+The first two write nothing and exist to fail early. The next two need neither the database nor the API, so a failure in either is a data problem rather than an infrastructure one. Only the last step rebuilds the graph and spends API calls.
+
+Run `python Evaluation/validation.py --fresh` the first time, or after editing the schema or the prompt examples. The expert arm journals its progress so an interrupted run can resume, and the journal carries a digest of the model together with the schema and the examples, so editing any of them discards results produced under the old prompt rather than resuming on top of them. A journal file left on disk means the last run did not finish.
+
+Because section 6.2 clears the graph, run it before section 7 rather than after. It discards anything the running application loaded, including the case base.
+
+Both scoring scripts resolve their output against their own location rather than the working directory, so they write `Evaluation/validation_results.json` and `Evaluation/per_drug_results.json` no matter where you launch them from, replacing the committed reference copies. The validation report merges rather than overwrites, so an arm that was skipped keeps its previous result, and an `arms_this_run` field records which sections were recomputed. Back up the two files before a rerun if you want the originals kept.
 
 ## 7. Run the application
 
@@ -122,10 +142,10 @@ From there you can ask questions in plain English and query the synthetic data, 
 ## 8. Run the tests
 
 ```bash
-pytest tests/test_core.py
+python -m pytest tests/ -q
 ```
 
-The suite needs no database, API, or datasets, so it runs immediately after the install step, provided `pytest` was installed there. The same suite runs in continuous integration on every push, across Python 3.10, 3.11, and 3.12.
+The 77 tests need no database, API, or datasets, so they run immediately after the install step, provided `pytest` was installed there. The suite runs from the project root or from inside `tests/`. The same suite runs in continuous integration on every push, across Python 3.10, 3.11, and 3.12.
 
 ## Managing the container
 
@@ -142,3 +162,5 @@ docker rm memgraph       # remove once stopped
 - If the expert-system arm of the validation is skipped, the API key is missing or unreachable. The CRyPTIC classification arm still runs and writes its results.
 - If the scores do not move after you replace a dataset, the derived cache is stale. Delete `Datasets/cryptic_features.parquet` and run again.
 - If `pytest` is not found, install it as shown in section 3. It is not a runtime dependency.
+- If the expert arm re-queries when you expected it to resume, the schema or the prompt examples changed since the journal was written, so the results produced under the old prompt were discarded rather than mixed with new ones.
+- If the application reports no cases after a scoring run, section 6.2 cleared the graph. Click Initialize CBR again to reload them.

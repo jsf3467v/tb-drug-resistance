@@ -1,8 +1,9 @@
-import streamlit as st
 from dataclasses import dataclass
+
+import streamlit as st
+from cbr_engine import CaseStore, graph_cases
+from nl_interface import LLMUnavailable, NLInterface
 from tb_ontology import TBOntology
-from nl_interface import NLInterface, LLMUnavailable
-from cbr_engine import CaseStore
 
 st.set_page_config(
     page_title="TB Drug Resistance Hybrid AI System",
@@ -16,7 +17,7 @@ def init_system(api_key):
     return ontology, nl_interface
 
 
-def show_database_stats(ontology):
+def display_database_stats(ontology):
     try:
         node_counts = ontology.count_nodes()
         for node_info in node_counts:
@@ -50,12 +51,11 @@ def initialize_cbr():
 
     try:
         store = CaseStore(ontology)
-        existing_cases = store.count_cases()
+        existing_cases = store.case_count()
 
         if existing_cases == 0:
-            st.info("Importing cases to database - first time only...")
-            from cbr_engine import graph_cases
-            graph_cases(n_cases=1000)
+            st.info("Importing cases to database, first time only")
+            graph_cases()
 
         case_count = nl_interface.init_cbr()
 
@@ -73,13 +73,13 @@ def initialize_cbr():
 
 def display_rule_output(rule_output):
     st.subheader("Expert System Analysis")
-    _rule_metrics(rule_output)
-    _rule_recommendations(rule_output['recommendations'])
+    rule_metrics(rule_output)
+    rule_recommendations(rule_output['recommendations'])
     with st.expander("Rules Fired"):
         st.json(rule_output['rules_fired'])
 
 
-def _rule_metrics(rule_output):
+def rule_metrics(rule_output):
     col1, col2 = st.columns(2)
 
     with col1:
@@ -93,7 +93,7 @@ def _rule_metrics(rule_output):
             st.metric("Classification", classifications[0]['type'])
 
 
-def _rule_recommendations(recs):
+def rule_recommendations(recs):
     if recs.get('classifications'):
         st.write("**Classifications:**")
         for c in recs['classifications']:
@@ -161,9 +161,9 @@ def display_confidence(cbr_output):
     color = level_colors.get(level, 'gray')
 
     st.write("**Confidence Assessment:**")
-    outcome_prob = cbr_output.get('outcome_probability')
-    if outcome_prob is not None:
-        st.markdown(f"Estimated success probability: **{outcome_prob:.0%}**")
+    success_rate = cbr_output.get('success_rate')
+    if success_rate is not None:
+        st.markdown(f"Estimated success probability: **{success_rate:.0%}**")
     st.markdown(f"Evidence: :{color}[**{level.upper()}**] (score: {score:.2f})")
 
     factors = conf.get('factors', {})
@@ -193,9 +193,6 @@ def display_outcome_analysis(cbr_output):
             parts.append(f"{outcome}: {count} ({pct:.0f}%)")
         st.write("Distribution: " + " | ".join(parts))
 
-    weighted = oa.get('weighted_success_rate', 0)
-    st.write(f"Weighted Success Rate: {weighted:.1%}")
-
     risk = oa.get('risk_factors', [])
     if risk:
         st.write(f"Risk Factors Present: {', '.join(risk)}")
@@ -220,11 +217,11 @@ def display_similar_case(exp_case):
 
     with st.expander(header):
         st.write("**Feature Breakdown:**")
-        _case_feature_breakdown(exp_case.get('feature_breakdown', []))
-        _case_matches(exp_case)
+        feature_breakdown_lines(exp_case.get('feature_breakdown', []))
+        case_match_lines(exp_case)
 
 
-def _case_feature_breakdown(breakdown):
+def feature_breakdown_lines(breakdown):
     for fb in breakdown:
         match = fb.get('match', 'unknown')
         icon = "+" if match in ['exact', 'close'] else "~" if match == 'partial' else "-"
@@ -240,7 +237,7 @@ def _case_feature_breakdown(breakdown):
             st.write(f"  {icon} {feature}: {q_val} vs {c_val} (+{contrib:.3f})")
 
 
-def _case_matches(exp_case):
+def case_match_lines(exp_case):
     top = exp_case.get('top_matches', [])
     diffs = exp_case.get('key_differences', [])
 
@@ -309,7 +306,7 @@ def display_cbr_output(cbr_output):
     display_cbr_similar(cbr_output)
 
 
-def display_technical_details(user_question, cypher, results):
+def display_technical_details(cypher, results):
     st.subheader("Generated Cypher Query")
     st.code(cypher, language="cypher")
 
@@ -385,7 +382,7 @@ def display_query_tabs(user_question, outcome, nl_interface):
         if outcome.error:
             st.error(outcome.error)
         else:
-            display_technical_details(user_question, outcome.cypher, outcome.results)
+            display_technical_details(outcome.cypher, outcome.results)
 
     if outcome.error or not outcome.results:
         return
@@ -397,7 +394,7 @@ def display_query_tabs(user_question, outcome, nl_interface):
             st.info("No expert system rules applicable for this query")
 
     with tab3:
-        display_cbr_tab(outcome.cbr_output, nl_interface)
+        display_cbr_tab(outcome, nl_interface)
 
     with tab1:
         st.subheader("Answer")
@@ -406,19 +403,29 @@ def display_query_tabs(user_question, outcome, nl_interface):
         st.markdown(answer)
 
 
-def display_cbr_tab(cbr_output, nl_interface):
-    if cbr_output is None:
-        st.error("Patient not found in database or CBR query failed")
-        try:
-            patient_count = nl_interface.ontology.query("MATCH (p:Patient) RETURN count(p) as count")
-            if patient_count:
-                st.info(f"Database contains {patient_count[0]['count']} patients")
-        except Exception:
-            pass
-    elif cbr_output:
-        display_cbr_output(cbr_output)
-    else:
-        st.info("CBR not initialized or not applicable for this query")
+def display_cbr_tab(outcome, nl_interface):
+    """Case retrieval runs only for treatment questions with an initialized case
+    base, so an empty tab has three separate causes. Reporting them all as a
+    database error told the user a lookup failed when none was attempted."""
+    if outcome.cbr_output:
+        display_cbr_output(outcome.cbr_output)
+        return
+
+    if outcome.question_type != 'treatment':
+        st.info("Case-based reasoning applies to treatment questions only")
+        return
+
+    if not nl_interface.cbr_engine:
+        st.info("Case-based reasoning is not initialized. Use the sidebar to import cases.")
+        return
+
+    st.error("No patient in these results matches a record in the database")
+    try:
+        patient_count = nl_interface.ontology.query("MATCH (p:Patient) RETURN count(p) as count")
+        if patient_count:
+            st.info(f"Database contains {patient_count[0]['count']} patients")
+    except Exception as exc:
+        st.caption(f"Patient count unavailable ({exc})")
 
 
 st.title("TB Drug Resistance Hybrid AI System")
@@ -449,7 +456,7 @@ with st.sidebar:
 
     st.header("Database Statistics")
     if api_key and 'ontology' in st.session_state:
-        show_database_stats(st.session_state['ontology'])
+        display_database_stats(st.session_state['ontology'])
 
     st.markdown("---")
 
@@ -465,7 +472,7 @@ with st.sidebar:
         st.info(status_msg)
 
     st.markdown("---")
-    st.caption("TB Expert System v4.0")
+    st.caption("TB Expert System")
     st.caption("KG + Rules + CBR")
 
 if not api_key:

@@ -1,8 +1,24 @@
-import random
+"""Synthetic patient case base for case-based reasoning. No open dataset links
+genotype, regimen, and outcome at the scale retrieval needs, so the cases are
+generated from a fixed seed and are reproducible rather than sampled.
+"""
 
-# WHO-informed regional structure: the regions, lineages, and regimen names are
+import random
+from collections import Counter
+
+DEFAULT_CASES = 1000
+DEFAULT_SEED = 42
+
+# WHO-informed regional structure. The regions, lineages, and regimen names are
 # real, but the rates and demographic magnitudes are synthetic approximations,
-# not figures transcribed from any specific WHO publication. See README Limitations.
+# not figures transcribed from any specific WHO publication. See README
+# Limitations.
+#
+# European sits far above the others on mdr_rate on purpose. The region stands
+# for the Eastern Europe and Central Asia belt, Moldova, Ukraine, Russia, and
+# Kazakhstan in the seed graph, which carries the highest multidrug-resistant
+# burden of any region. Its prev_tx_rate is the highest for the same reason,
+# since prior treatment is a leading risk factor for resistance.
 REGION_DATA = {
     'African': {
         'hiv_rate': 0.26, 'diabetes_rate': 0.08, 'age_mean': 34, 'age_std': 12,
@@ -30,14 +46,13 @@ REGION_DATA = {
     }
 }
 
-# Base success rates by profile and regimen
+# Base success rate for each profile and regimen the generator can produce.
 BASE_SUCCESS = {
     ('Susceptible', '2HRZE_4HR'): 0.88,
     ('MonoResistant', '6REZ_Lfx'): 0.84,
     ('PolyResistant', 'Individualized_12mo'): 0.76,
     ('PolyResistant', 'AllOral_9mo'): 0.74,
     ('MDR', 'BPaLM'): 0.82,
-    ('MDR', 'BPaL'): 0.80,
     ('MDR', 'AllOral_9mo'): 0.73,
     ('MDR', 'Long_1820mo'): 0.63,
     ('PreXDR', 'BPaL'): 0.68,
@@ -47,10 +62,19 @@ BASE_SUCCESS = {
     ('XDR', 'Individualized_20mo'): 0.48
 }
 
-# Regimen options by profile and year
+# Regimen share by profile and year. Every profile carries every year, and the
+# shares within a year are weights rather than probabilities.
 REGIMEN_OPTIONS = {
-    'Susceptible': {'2022': ['2HRZE_4HR'], '2023': ['2HRZE_4HR'], '2024': ['2HRZE_4HR']},
-    'MonoResistant': {'2022': ['6REZ_Lfx'], '2023': ['6REZ_Lfx'], '2024': ['6REZ_Lfx']},
+    'Susceptible': {
+        '2022': [('2HRZE_4HR', 1.00)],
+        '2023': [('2HRZE_4HR', 1.00)],
+        '2024': [('2HRZE_4HR', 1.00)]
+    },
+    'MonoResistant': {
+        '2022': [('6REZ_Lfx', 1.00)],
+        '2023': [('6REZ_Lfx', 1.00)],
+        '2024': [('6REZ_Lfx', 1.00)]
+    },
     'PolyResistant': {
         '2022': [('Individualized_12mo', 0.70), ('AllOral_9mo', 0.30)],
         '2023': [('Individualized_12mo', 0.55), ('AllOral_9mo', 0.45)],
@@ -79,39 +103,89 @@ REGIMEN_DURATION = {
     'Individualized_20mo': 20
 }
 
+# Share of the case base each profile should hold. Chosen for retrieval
+# coverage rather than to match population prevalence.
+PROFILE_TARGETS = {
+    'Susceptible': 0.50,
+    'MonoResistant': 0.12,
+    'PolyResistant': 0.06,
+    'MDR': 0.18,
+    'PreXDR': 0.08,
+    'XDR': 0.06
+}
+
+# Relative chance of each profile before the regional and treatment adjustments.
+PROFILE_BASE_WEIGHT = {
+    'Susceptible': 1.0, 'MonoResistant': 0.5, 'PolyResistant': 0.25,
+    'MDR': 0.3, 'PreXDR': 0.1, 'XDR': 0.05
+}
+
+# Regional mdr_rate is expressed against this reference, so a region at the
+# reference neither raises nor lowers the chance of a resistant profile.
+REFERENCE_MDR_RATE = 0.05
+MINOR_RESISTANCE = ('MonoResistant', 'PolyResistant')
+MAJOR_RESISTANCE = ('MDR', 'PreXDR', 'XDR')
+PREV_TX_MINOR_BOOST = 1.6
+PREV_TX_MAJOR_BOOST = 2.5
+
+YEARS = [2022, 2023, 2024]
+YEAR_WEIGHTS = [0.30, 0.35, 0.35]
+
+# Demographic bounds and adjustments.
+HIV_RESISTANT_BOOST = 1.3
+HIV_CEILING = 0.40
+HIV_AGE_SHIFT = 5
+AGE_MIN = 18
+AGE_MAX = 80
+DIABETES_CEILING = 0.35
+DIABETES_OLDER = (50, 1.8)
+DIABETES_MIDDLE = (40, 1.3)
+
+# Outcome floor. The multipliers below can drive a hard case under this, and a
+# treatment success rate of zero is not a claim the case base should make.
+SUCCESS_FLOOR = 0.25
+
+FAILURE_TYPES = ['death', 'failed', 'ltfu', 'not_evaluated']
+FAILURE_WEIGHTS = {
+    'minor': [0.25, 0.17, 0.42, 0.16],
+    'major': [0.47, 0.19, 0.28, 0.06]
+}
+
+
+def profile_quota(n):
+    """Case count per profile, largest remainder so the parts sum to n exactly.
+    Truncating instead would leave a shortfall that the sampler had to absorb
+    somewhere, which silently favored whichever profile it fell back to."""
+    exact = {p: n * share for p, share in PROFILE_TARGETS.items()}
+    quota = {p: int(v) for p, v in exact.items()}
+    order = sorted(exact, key=lambda p: exact[p] - quota[p], reverse=True)
+    for profile in order[:n - sum(quota.values())]:
+        quota[profile] += 1
+    return quota
+
 
 class CaseGenerator:
-    def __init__(self, seed=42):
+    def __init__(self, seed=DEFAULT_SEED):
         self.rng = random.Random(seed)
-        self.regions = list(REGION_DATA.keys())
+        self.regions = list(REGION_DATA)
         self.region_weights = [REGION_DATA[r]['weight'] for r in self.regions]
 
-        # Targeting distribution for adequate CBR coverage (synthetic, not real epidemiology)
-        self.profile_targets = {
-            'Susceptible': 0.50,
-            'MonoResistant': 0.12,
-            'PolyResistant': 0.06,
-            'MDR': 0.18,
-            'PreXDR': 0.08,
-            'XDR': 0.06
-        }
+    def cases(self, n=DEFAULT_CASES):
+        """One case per index, with the profile mix held to its quota."""
+        quota = profile_quota(n)
+        counts = dict.fromkeys(PROFILE_TARGETS, 0)
 
-    def generate(self, n=1000):
-        cases = []
-        profile_counts = {p: 0 for p in self.profile_targets}
-        profile_limits = {p: int(n * pct) for p, pct in self.profile_targets.items()}
-
+        built = []
         for i in range(n):
-            case = self._single_case(i, profile_counts, profile_limits)
-            profile_counts[case['profile']] += 1
-            cases.append(case)
-        return cases
+            case = self.one_case(i, counts, quota)
+            counts[case['profile']] += 1
+            built.append(case)
+        return built
 
-    def _single_case(self, index, profile_counts, profile_limits):
-        region = self._sample_region()
-        year = self._sample_year()
-        previous_treatment = self._sample_previous_treatment(region)
-        profile = self._sample_profile(region, previous_treatment, profile_counts, profile_limits)
+    def one_case(self, index, counts, quota):
+        region = self.region()
+        year = self.year()
+        previous_treatment = self.previous_treatment(region)
 
         case = {
             'case_id': f'CASE{index + 1:04d}',
@@ -120,132 +194,95 @@ class CaseGenerator:
             'region': region,
             'year': year,
             'previous_treatment': previous_treatment,
-            'profile': profile
+            'profile': self.profile_draw(region, previous_treatment, counts, quota)
         }
 
-        self._assign_demographics(case)
-        case['regimen'] = self._sample_regimen(profile, year)
-        case['duration_months'] = REGIMEN_DURATION.get(case['regimen'], 6)
-        case['outcome'] = self._sample_outcome(case)
-
+        self.demographics(case)
+        case['regimen'] = self.regimen(case['profile'], year)
+        case['duration_months'] = REGIMEN_DURATION[case['regimen']]
+        case['outcome'] = self.outcome(case)
         return case
 
-    def _sample_region(self):
+    def region(self):
         return self.rng.choices(self.regions, weights=self.region_weights)[0]
 
-    def _sample_year(self):
-        return self.rng.choices([2022, 2023, 2024], weights=[0.30, 0.35, 0.35])[0]
+    def year(self):
+        return self.rng.choices(YEARS, weights=YEAR_WEIGHTS)[0]
 
-    def _sample_previous_treatment(self, region):
-        base_rate = REGION_DATA[region]['prev_tx_rate']
-        return self.rng.random() < base_rate
+    def previous_treatment(self, region):
+        return self.rng.random() < REGION_DATA[region]['prev_tx_rate']
 
-    def _sample_profile(self, region, previous_treatment, profile_counts, profile_limits):
-        available = []
-        weights = []
+    def profile_draw(self, region, previous_treatment, counts, quota):
+        """Weighted draw among profiles below quota. The quota sums to the case
+        count, so one profile always has room and there is no fallback to make.
+        random.choices normalizes the weights, so they are passed as they are."""
+        open_profiles = [p for p in quota if counts[p] < quota[p]]
+        weights = [self.profile_weight(p, region, previous_treatment) for p in open_profiles]
+        return self.rng.choices(open_profiles, weights=weights)[0]
 
-        for profile, limit in profile_limits.items():
-            if profile_counts[profile] < limit:
-                available.append(profile)
-                weight = self._profile_weight(profile, region, previous_treatment)
-                weights.append(weight)
+    def profile_weight(self, profile, region, previous_treatment):
+        weight = PROFILE_BASE_WEIGHT[profile]
+        mdr_mult = REGION_DATA[region]['mdr_rate'] / REFERENCE_MDR_RATE
 
-        if not available:
-            return 'Susceptible'
-
-        total = sum(weights)
-        weights = [w / total for w in weights]
-
-        return self.rng.choices(available, weights=weights)[0]
-
-    def _profile_weight(self, profile, region, previous_treatment):
-        base_weights = {'Susceptible': 1.0, 'MonoResistant': 0.5, 'PolyResistant': 0.25,
-                        'MDR': 0.3, 'PreXDR': 0.1, 'XDR': 0.05}
-        weight = base_weights.get(profile, 0.1)
-
-        mdr_mult = REGION_DATA[region]['mdr_rate'] / 0.05
-
-        if profile in ['MonoResistant', 'PolyResistant']:
+        if profile in MINOR_RESISTANCE:
             weight *= mdr_mult ** 0.5
             if previous_treatment:
-                weight *= 1.6
-        elif profile in ['MDR', 'PreXDR', 'XDR']:
+                weight *= PREV_TX_MINOR_BOOST
+        elif profile in MAJOR_RESISTANCE:
             weight *= mdr_mult
             if previous_treatment:
-                weight *= 2.5
+                weight *= PREV_TX_MAJOR_BOOST
 
         return weight
 
-    def _assign_demographics(self, case):
-        region = case['region']
-        profile = case['profile']
-        region_data = REGION_DATA[region]
-
-        case['hiv_status'] = self._sample_hiv(region_data, profile)
-        case['age'] = self._sample_age(region_data, case['hiv_status'])
-        case['diabetes'] = self._sample_diabetes(region_data, case['age'])
+    def demographics(self, case):
+        region_data = REGION_DATA[case['region']]
+        case['hiv_status'] = self.hiv_status(region_data, case['profile'])
+        case['age'] = self.age(region_data, case['hiv_status'])
+        case['diabetes'] = self.diabetes(region_data, case['age'])
         case['sex'] = 'M' if self.rng.random() < region_data['male_ratio'] else 'F'
 
-    def _sample_hiv(self, region_data, profile):
-        hiv_rate = region_data['hiv_rate']
-        if profile in ['MDR', 'PreXDR', 'XDR']:
-            hiv_rate *= 1.3
-        return 'positive' if self.rng.random() < min(hiv_rate, 0.40) else 'negative'
+    def hiv_status(self, region_data, profile):
+        rate = region_data['hiv_rate']
+        if profile in MAJOR_RESISTANCE:
+            rate *= HIV_RESISTANT_BOOST
+        return 'positive' if self.rng.random() < min(rate, HIV_CEILING) else 'negative'
 
-    def _sample_age(self, region_data, hiv_status):
-        age_mean = region_data['age_mean']
-        age_std = region_data['age_std']
-
+    def age(self, region_data, hiv_status):
+        mean = region_data['age_mean']
         if hiv_status == 'positive':
-            age_mean -= 5
+            mean -= HIV_AGE_SHIFT
+        age = int(self.rng.gauss(mean, region_data['age_std']))
+        return max(AGE_MIN, min(AGE_MAX, age))
 
-        age = int(self.rng.gauss(age_mean, age_std))
-        return max(18, min(80, age))
+    def diabetes(self, region_data, age):
+        rate = region_data['diabetes_rate']
+        older, older_mult = DIABETES_OLDER
+        middle, middle_mult = DIABETES_MIDDLE
+        if age > older:
+            rate *= older_mult
+        elif age > middle:
+            rate *= middle_mult
+        return self.rng.random() < min(rate, DIABETES_CEILING)
 
-    def _sample_diabetes(self, region_data, age):
-        diabetes_rate = region_data['diabetes_rate']
+    def regimen(self, profile, year):
+        options = REGIMEN_OPTIONS[profile][str(year)]
+        return self.rng.choices([r for r, _ in options], weights=[w for _, w in options])[0]
 
-        if age > 50:
-            diabetes_rate *= 1.8
-        elif age > 40:
-            diabetes_rate *= 1.3
-
-        return self.rng.random() < min(diabetes_rate, 0.35)
-
-    def _sample_regimen(self, profile, year):
-        options = REGIMEN_OPTIONS.get(profile, {}).get(str(year))
-
-        if not options:
-            return '2HRZE_4HR'
-
-        if isinstance(options[0], str):
-            return self.rng.choice(options)
-
-        regimens = [r[0] for r in options]
-        weights = [r[1] for r in options]
-        return self.rng.choices(regimens, weights=weights)[0]
-
-    def _sample_outcome(self, case):
-        success_rate = self._success_rate(case)
-
-        if self.rng.random() < success_rate:
+    def outcome(self, case):
+        if self.rng.random() < self.success_rate(case):
             return 'success'
+        return self.failure_type(case['profile'])
 
-        return self._sample_failure_type(case['profile'])
+    def success_rate(self, case):
+        """Base rate for the profile and regimen, adjusted downward for risk.
+        Every adjustment is at most 1.0, so only the floor can bind."""
+        base = BASE_SUCCESS[(case['profile'], case['regimen'])]
+        rate = base * self.outcome_modifier(case) * self.interaction_modifier(case)
+        return max(SUCCESS_FLOOR, rate)
 
-    def _success_rate(self, case):
-        key = (case['profile'], case['regimen'])
-        base_rate = BASE_SUCCESS.get(key, 0.70)
-
-        modifier = self._outcome_modifier(case)
-        interaction = self._interaction_modifier(case)
-
-        final_rate = base_rate * modifier * interaction
-        return max(0.25, min(0.95, final_rate))
-
-    def _outcome_modifier(self, case):
+    def outcome_modifier(self, case):
         modifier = 1.0
-
         if case['hiv_status'] == 'positive':
             modifier *= 0.90
         if case['diabetes']:
@@ -258,130 +295,92 @@ class CaseGenerator:
             modifier *= 0.85
         if case['sex'] == 'M':
             modifier *= 0.98
-
         return modifier
 
-    def _interaction_modifier(self, case):
+    def interaction_modifier(self, case):
         modifier = 1.0
-
         if case['hiv_status'] == 'positive' and case['diabetes']:
             modifier *= 0.94
         if case['hiv_status'] == 'positive' and case['age'] > 55:
             modifier *= 0.92
-        if case['previous_treatment'] and case['profile'] in ['MDR', 'PreXDR', 'XDR']:
+        if case['previous_treatment'] and case['profile'] in MAJOR_RESISTANCE:
             modifier *= 0.90
         if case['diabetes'] and case['age'] > 60:
             modifier *= 0.95
-
         return modifier
 
-    def _sample_failure_type(self, profile):
-        types = ['death', 'failed', 'ltfu', 'not_evaluated']
-        if profile in ('Susceptible', 'MonoResistant', 'PolyResistant'):
-            weights = [0.25, 0.17, 0.42, 0.16]
-        else:
-            weights = [0.47, 0.19, 0.28, 0.06]
+    def failure_type(self, profile):
+        band = 'major' if profile in MAJOR_RESISTANCE else 'minor'
+        return self.rng.choices(FAILURE_TYPES, weights=FAILURE_WEIGHTS[band])[0]
 
-        return self.rng.choices(types, weights=weights)[0]
-
-    def distribution_summary(self, cases):
+    @staticmethod
+    def distribution_summary(cases):
+        """Shares and means over the case base, as proportions rather than
+        percentages so the figures match what the notebook computes."""
         n = len(cases)
         if not n:
-            return {'total': 0, 'profiles': {}, 'regions': {}, 'years': {}, 'outcomes': {},
-                    'hiv_rate': 0.0, 'diabetes_rate': 0.0, 'prev_tx_rate': 0.0,
-                    'avg_age': 0.0, 'success_rate': 0.0}
-        tally = self._tally(cases)
+            return {}
 
+        shares = {key: {k: round(v / n, 3) for k, v in Counter(c[key] for c in cases).items()}
+                  for key in ('profile', 'region', 'year', 'outcome')}
         return {
             'total': n,
-            'profiles': self._pct(tally['profiles'], n),
-            'regions': self._pct(tally['regions'], n),
-            'years': self._pct(tally['years'], n),
-            'outcomes': self._pct(tally['outcomes'], n),
-            'hiv_rate': round(tally['hiv'] / n * 100, 1),
-            'diabetes_rate': round(tally['diabetes'] / n * 100, 1),
-            'prev_tx_rate': round(tally['prev_tx'] / n * 100, 1),
-            'avg_age': round(tally['age_sum'] / n, 1),
-            'success_rate': round(tally['outcomes'].get('success', 0) / n * 100, 1)
+            **shares,
+            'hiv_rate': round(sum(c['hiv_status'] == 'positive' for c in cases) / n, 3),
+            'diabetes_rate': round(sum(c['diabetes'] for c in cases) / n, 3),
+            'prev_tx_rate': round(sum(c['previous_treatment'] for c in cases) / n, 3),
+            'avg_age': round(sum(c['age'] for c in cases) / n, 1),
+            'success_rate': round(sum(c['outcome'] == 'success' for c in cases) / n, 3)
         }
 
     @staticmethod
-    def _pct(counter, n):
-        return {k: round(v / n * 100, 1) for k, v in counter.items()}
-
-    @staticmethod
-    def _tally(cases):
-        profiles, regions, years, outcomes = {}, {}, {}, {}
-        hiv = diabetes = prev_tx = age_sum = 0
-
-        for c in cases:
-            profiles[c['profile']] = profiles.get(c['profile'], 0) + 1
-            regions[c['region']] = regions.get(c['region'], 0) + 1
-            years[c['year']] = years.get(c['year'], 0) + 1
-            outcomes[c['outcome']] = outcomes.get(c['outcome'], 0) + 1
-            if c['hiv_status'] == 'positive':
-                hiv += 1
-            if c['diabetes']:
-                diabetes += 1
-            if c['previous_treatment']:
-                prev_tx += 1
-            age_sum += c['age']
-
-        return {'profiles': profiles, 'regions': regions, 'years': years,
-                'outcomes': outcomes, 'hiv': hiv, 'diabetes': diabetes,
-                'prev_tx': prev_tx, 'age_sum': age_sum}
-
-    def profile_outcomes(self, cases):
-        profile_stats = {}
-
-        for c in cases:
-            p = c['profile']
-            if p not in profile_stats:
-                profile_stats[p] = {'total': 0, 'success': 0}
-            profile_stats[p]['total'] += 1
-            if c['outcome'] == 'success':
-                profile_stats[p]['success'] += 1
-
-        for p, stats in profile_stats.items():
-            stats['rate'] = round(stats['success'] / stats['total'] * 100, 1)
-
-        return profile_stats
+    def profile_outcomes(cases):
+        """Success share within each profile, with the counts behind it."""
+        total = Counter(c['profile'] for c in cases)
+        success = Counter(c['profile'] for c in cases if c['outcome'] == 'success')
+        return {p: {'total': total[p], 'success': success[p],
+                    'rate': round(success[p] / total[p], 3)} for p in total}
 
 
-def generate_cases(n=1000, seed=42):
-    generator = CaseGenerator(seed)
-    return generator.generate(n)
+def regimen_ceiling():
+    """Best regimen accuracy any predictor can reach on this case base. The
+    generator draws the regimen from profile and year alone, so the bound is
+    the share held by the most common option, averaged over both. Reported
+    next to the baseline, since a score near it means the task is saturated
+    rather than the method strong."""
+    total = 0.0
+    for profile, share in PROFILE_TARGETS.items():
+        for year, year_weight in zip(YEARS, YEAR_WEIGHTS, strict=True):
+            options = REGIMEN_OPTIONS[profile][str(year)]
+            total += share * year_weight * max(w for _, w in options) / sum(w for _, w in options)
+    return round(total, 3)
+
+
+def case_base(n=DEFAULT_CASES, seed=DEFAULT_SEED):
+    return CaseGenerator(seed).cases(n)
+
+
+def main():
+    cases = case_base()
+    summary = CaseGenerator.distribution_summary(cases)
+
+    print(f"Generated {summary['total']} cases")
+    for key, title in (('profile', 'Profile'), ('region', 'Region'),
+                       ('year', 'Year'), ('outcome', 'Outcome')):
+        print(f"\n{title} distribution:")
+        for name, share in sorted(summary[key].items()):
+            print(f"  {name}: {share:.1%}")
+
+    print("\nDemographics:")
+    print(f"  HIV+: {summary['hiv_rate']:.1%}")
+    print(f"  Diabetes: {summary['diabetes_rate']:.1%}")
+    print(f"  Previous Tx: {summary['prev_tx_rate']:.1%}")
+    print(f"  Avg age: {summary['avg_age']}")
+
+    print("\nSuccess rate by profile:")
+    for profile, stats in sorted(CaseGenerator.profile_outcomes(cases).items()):
+        print(f"  {profile}: {stats['rate']:.1%} ({stats['success']}/{stats['total']})")
 
 
 if __name__ == '__main__':
-    generator = CaseGenerator(seed=42)
-    cases = generator.generate(1000)
-
-    summary = generator.distribution_summary(cases)
-    print(f"Generated {summary['total']} cases")
-    print("\nProfile Distribution:")
-    for profile, pct in sorted(summary['profiles'].items()):
-        print(f"  {profile}: {pct}%")
-
-    print("\nRegion Distribution:")
-    for region, pct in sorted(summary['regions'].items()):
-        print(f"  {region}: {pct}%")
-
-    print("\nYear Distribution:")
-    for year, pct in sorted(summary['years'].items()):
-        print(f"  {year}: {pct}%")
-
-    print("\nDemographics:")
-    print(f"  HIV+: {summary['hiv_rate']}%")
-    print(f"  Diabetes: {summary['diabetes_rate']}%")
-    print(f"  Previous Tx: {summary['prev_tx_rate']}%")
-    print(f"  Avg Age: {summary['avg_age']}")
-
-    print("\nOutcomes:")
-    for outcome, pct in sorted(summary['outcomes'].items()):
-        print(f"  {outcome}: {pct}%")
-
-    print("\nSuccess Rate by Profile:")
-    profile_outcomes = generator.profile_outcomes(cases)
-    for profile, stats in sorted(profile_outcomes.items()):
-        print(f"  {profile}: {stats['rate']}% ({stats['success']}/{stats['total']})")
+    main()

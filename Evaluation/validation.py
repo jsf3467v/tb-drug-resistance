@@ -2,6 +2,7 @@
 intervals and calibration, expert-system query translation against gold queries, and
 CRyPTIC classification."""
 
+import hashlib
 import json
 import random
 import sys
@@ -12,12 +13,28 @@ from pathlib import Path
 
 import numpy as np
 from dotenv import load_dotenv
+from scipy.sparse import csr_matrix
+from scipy.sparse.csgraph import maximum_bipartite_matching
 
 EVAL_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(EVAL_DIR.parent / "SRC"))
 
-from calibration import fit_temperature, scaled_confidence
-from metrics import balanced_accuracy, brier, class_rates, macro_f1, mcnemar
+from calibration import (
+    fit_platt,
+    fit_temperature,
+    platt_confidence,
+    scaled_confidence,
+)
+from cbr_cases import regimen_ceiling
+from config import EXAMPLES, SCHEMA
+from metrics import (
+    RuleEngineEvaluator,
+    balanced_accuracy,
+    brier,
+    class_rates,
+    macro_f1,
+    mcnemar,
+)
 
 SEED = 42
 K_FOLDS = 5
@@ -30,22 +47,29 @@ RESULTS = EVAL_DIR / "validation_results.json"
 EXPERT_CHECKPOINT = EVAL_DIR / ".expert_checkpoint.json"
 
 
-# The expert arm is the only one worth resuming, since each query is a paid API
-# call. The saved copy is tagged with the model that produced it and discarded
-# when that changes. Only cleanly scored queries are saved, so a query that
-# errored on a bad key or a dropped connection is retried rather than cached as
-# a failure. The other two arms recompute, keeping their numbers tied to the
-# current source rather than to whatever ran last.
+# Only the expert arm journals, since each query costs an API call. The file is
+# tagged with its model, dropped when that changes, and holds only cleanly scored
+# queries, so a failed call is retried rather than kept as a failure. It is
+# written on every query and removed once a run finishes without an error, so a
+# file on disk means the last run did not complete.
 
 
-def expert_checkpoint(model, results=None):
+def prompt_tag(model):
+    """Short digest of everything that shapes a generated query. The checkpoint
+    carries it, so editing the schema or the examples discards results written
+    under the old prompt instead of resuming on top of them. The model name is
+    passed in rather than imported, since importing it pulls in the API client."""
+    return hashlib.sha256((model + SCHEMA + EXAMPLES).encode()).hexdigest()[:12]
+
+
+def expert_checkpoint(tag, results=None):
     if results is not None:
-        EXPERT_CHECKPOINT.write_text(json.dumps({"model": model, "results": results}))
+        EXPERT_CHECKPOINT.write_text(json.dumps({"tag": tag, "results": results}))
         return results
     if not EXPERT_CHECKPOINT.exists():
         return None
     saved = json.loads(EXPERT_CHECKPOINT.read_text())
-    return saved["results"] if saved.get("model") == model else None
+    return saved["results"] if saved.get("tag") == tag else None
 
 
 def expert_checkpoint_clear():
@@ -72,12 +96,17 @@ def rate(results, key):
     return sum(r[key] for r in results) / len(results) if results else 0.0
 
 
-def accuracy_with_ci(values, rng=None):
-    center, lower, upper = bootstrap_ci(values, rng=rng)
-    spread = float(np.std(values, ddof=1)) if len(values) > 1 else 0.0
+def accuracy_with_ci(all_results, key, rng=None):
+    """Pooled accuracy with a bootstrap interval over cases, plus the spread
+    across folds. Each case is scored once by a model that did not train on it,
+    so the cases carry the interval. The fold spread answers the separate
+    question of how far the estimate moves when the split moves."""
+    per_case = [float(r[key]) for fold in all_results for r in fold]
+    fold_rates = [rate(fold, key) for fold in all_results]
+    center, lower, upper = bootstrap_ci(per_case, rng=rng)
     return {
         'mean': round(center, 3),
-        'std': round(spread, 3),
+        'fold_std': round(float(np.std(fold_rates, ddof=1)), 3) if len(fold_rates) > 1 else 0.0,
         'ci_lower': round(lower, 3),
         'ci_upper': round(upper, 3),
     }
@@ -147,9 +176,12 @@ def cbr_query(case):
     return {k: case[k] for k in CBR_QUERY_KEYS}
 
 
-def neighbor_regimen_mode(similar_cases):
-    """Most frequent regimen among the retrieved neighbors, ties broken by name."""
-    counts = Counter(case['regimen'] for _, case in similar_cases)
+def neighbor_regimen_mode(similar_cases, applicable):
+    """Most frequent applicable regimen among the retrieved neighbors, ties
+    broken by name. Restricted to the same set the recommender may draw from,
+    so the two differ only in how they rank, not in what they may pick."""
+    counts = Counter(case['regimen'] for _, case in similar_cases
+                     if case['regimen'] in applicable)
     if not counts:
         return None
     top = max(counts.values())
@@ -161,29 +193,26 @@ def evaluate_cbr_case(test_case, engine):
 
     recs = analysis['recommendations']
     predicted_regimen = recs[0]['regimen'] if recs else None
-    mode_regimen = neighbor_regimen_mode(analysis['similar_cases']) or predicted_regimen
+    applicable = engine.profile_regimens.get(test_case['profile'], set())
+    mode_regimen = neighbor_regimen_mode(analysis['similar_cases'], applicable)
     actual_success = test_case['outcome'] == 'success'
 
     return {
         'regimen_correct': predicted_regimen == test_case['regimen'],
         'regimen_mode_correct': mode_regimen == test_case['regimen'],
         'outcome_correct': (analysis['success_rate'] >= 0.5) == actual_success,
-        'confidence': analysis['confidence']['score'],
+        'abstained': predicted_regimen is None,
         'success_prob': analysis['success_rate'],
         'profile': test_case['profile'],
         'actual_success': actual_success,
-        'actual_regimen': test_case['regimen'],
     }
 
 
-def fold_scores(train, test, index):
+def fold_scores(train, test):
     from cbr_engine import CBREngine
 
     engine = CBREngine(train)
-    results = [evaluate_cbr_case(case, engine) for case in test]
-    print(f"  fold {index}  regimen {rate(results, 'regimen_correct'):.1%}, "
-          f"outcome {rate(results, 'outcome_correct'):.1%}")
-    return results
+    return [evaluate_cbr_case(case, engine) for case in test]
 
 
 def profile_accuracy(flat_results):
@@ -196,58 +225,91 @@ def profile_accuracy(flat_results):
             for p, s in by_profile.items()}
 
 
-def baseline_accuracy(flat):
-    n = len(flat)
-    if not n:
+def regimen_modes(cases):
+    """Most frequent regimen within each resistance profile."""
+    counts = defaultdict(Counter)
+    for case in cases:
+        counts[case['profile']][case['regimen']] += 1
+    return {profile: c.most_common(1)[0][0] for profile, c in counts.items()}
+
+
+def baseline_accuracy(train, test):
+    """Majority-class floor fit on train and scored on test."""
+    if not train or not test:
         return {'outcome': 0.0, 'regimen': 0.0}
-    success = sum(r['actual_success'] for r in flat) / n
-    by_profile = defaultdict(Counter)
-    for r in flat:
-        by_profile[r['profile']][r['actual_regimen']] += 1
-    majority = sum(c.most_common(1)[0][1] for c in by_profile.values()) / n
-    return {'outcome': round(success, 3), 'regimen': round(majority, 3)}
+    modes = regimen_modes(train)
+    predict_success = sum(c['outcome'] == 'success' for c in train) / len(train) >= 0.5
+    outcome = sum((c['outcome'] == 'success') == predict_success for c in test) / len(test)
+    regimen = sum(modes.get(c['profile']) == c['regimen'] for c in test) / len(test)
+    return {'outcome': round(outcome, 3), 'regimen': round(regimen, 3)}
 
 
-def fold_temperatures(all_results):
-    """Per-fold leak-free temperature scaling, kept to document the rejected calibration."""
+def baseline_means(baselines):
+    """Mean of each baseline across folds."""
+    if not baselines:
+        return {'outcome': 0.0, 'regimen': 0.0}
+    return {key: round(float(np.mean([b[key] for b in baselines])), 3)
+            for key in baselines[0]}
+
+
+def fold_calibrations(all_results):
+    """Both scalings, fit on the other folds and applied to the held-out one, so
+    no case is scored by a fit that saw it. Temperature is kept because it is the
+    standard method and its failure here is a result, not an omission."""
     fold_preds = [[(r['success_prob'], 1.0 if r['actual_success'] else 0.0) for r in fold]
                   for fold in all_results]
-    temperatures, calibrated = [], []
+    temperatures, platts, tempered, platted = [], [], [], []
 
     for i, preds in enumerate(fold_preds):
         other = [p for j, fold in enumerate(fold_preds) if j != i for p in fold]
-        t = fit_temperature([c for c, _ in other], [y for _, y in other])
-        temperatures.append(round(t, 3))
-        scaled = scaled_confidence(np.array([c for c, _ in preds]), t)
-        calibrated.extend((float(s), bool(y)) for s, (_, y) in zip(scaled, preds, strict=True))
+        confidence = [c for c, _ in other]
+        labels = [y for _, y in other]
+        held = np.array([c for c, _ in preds])
 
-    return temperatures, calibrated
+        temperature = fit_temperature(confidence, labels)
+        slope, intercept = fit_platt(confidence, labels)
+        temperatures.append(round(temperature, 3))
+        platts.append((round(slope, 3), round(intercept, 3)))
+
+        tempered.extend((float(s), bool(y)) for s, (_, y)
+                        in zip(scaled_confidence(held, temperature), preds, strict=True))
+        platted.extend((float(s), bool(y)) for s, (_, y)
+                       in zip(platt_confidence(held, slope, intercept), preds, strict=True))
+
+    return temperatures, platts, tempered, platted
 
 
-def aggregate_cbr_folds(all_results, k, seed=SEED):
+def aggregate_cbr_folds(all_results, baselines, k, seed=SEED):
     flat = [r for fold in all_results for r in fold]
     rng = np.random.default_rng(seed)
     predictions = [(r['success_prob'], r['actual_success']) for r in flat]
-    temperatures, calibrated = fold_temperatures(all_results)
+    temperatures, platts, tempered, platted = fold_calibrations(all_results)
 
     return {
         'k': k,
         'total_cases': len(flat),
-        'regimen_accuracy': accuracy_with_ci(
-            [rate(f, 'regimen_correct') for f in all_results], rng),
-        'outcome_accuracy': accuracy_with_ci(
-            [rate(f, 'outcome_correct') for f in all_results], rng),
-        'regimen_mode_accuracy': accuracy_with_ci(
-            [rate(f, 'regimen_mode_correct') for f in all_results], rng),
+        'regimen_accuracy': accuracy_with_ci(all_results, 'regimen_correct', rng),
+        'outcome_accuracy': accuracy_with_ci(all_results, 'outcome_correct', rng),
+        'regimen_mode_accuracy': accuracy_with_ci(all_results, 'regimen_mode_correct', rng),
         'by_profile': profile_accuracy(flat),
-        'baseline': baseline_accuracy(flat),
+        'abstentions': sum(r['abstained'] for r in flat),
+        'baseline': baseline_means(baselines),
+        'ceiling': regimen_ceiling(),
         'calibration': {
             'ece': expected_calibration_error(predictions),
             'brier': brier(predictions),
-            'ece_temperature_scaled': expected_calibration_error(calibrated),
+            'ece_temperature_scaled': expected_calibration_error(tempered),
+            'ece_platt_scaled': expected_calibration_error(platted),
+            'brier_platt_scaled': brier(platted),
             'temperature_mean': round(float(np.mean(temperatures)), 3),
             'temperature_per_fold': temperatures,
+            'platt_per_fold': platts,
+            'platt_note': 'the fitted slope is near zero, so the scaled score is '
+                          'close to a constant at the base rate. The low scaled ECE '
+                          'reflects that rather than the score becoming informative, '
+                          'which the outcome arm matching its baseline also shows',
             'reliability': reliability_diagram(predictions),
+            'reliability_platt': reliability_diagram(platted),
         },
     }
 
@@ -255,8 +317,9 @@ def aggregate_cbr_folds(all_results, k, seed=SEED):
 def validate_cbr(cases, k=K_FOLDS, seed=SEED):
     print(f"\nCBR {k}-fold cross-validation")
     splits = stratified_folds(cases, k, random.Random(seed))
-    folds = [fold_scores(train, test, i + 1) for i, (train, test) in enumerate(splits)]
-    return aggregate_cbr_folds(folds, k, seed)
+    folds = [fold_scores(train, test) for train, test in splits]
+    baselines = [baseline_accuracy(train, test) for train, test in splits]
+    return aggregate_cbr_folds(folds, baselines, k, seed)
 
 
 # EXPERT SYSTEM VALIDATION
@@ -317,19 +380,43 @@ def expert_queries():
 
 
 def row_values(row):
-    """Canonical value set of one result row, free of column order and name."""
-    return frozenset(json.dumps(v, sort_keys=True, default=str) for v in row.values())
+    """Canonical value multiset of one result row, free of column order and
+    name. Each repeat carries its occurrence number, so a gold row holding one
+    value twice is not satisfied by a produced row holding it once."""
+    seen = Counter()
+    tagged = set()
+    for value in row.values():
+        text = json.dumps(value, sort_keys=True, default=str)
+        tagged.add((text, seen[text]))
+        seen[text] += 1
+    return frozenset(tagged)
 
 
 def covers(gold, produced):
-    """True when each gold row's values sit inside a distinct produced row."""
+    """True when each gold row's values sit inside a distinct produced row.
+    Greedy assignment strands a later gold row on input that does pair up, so
+    the pairing is solved as a matching. Identical row sets settle before that,
+    and a value index supplies the candidates rather than a full scan."""
+    wanted = [row_values(r) for r in gold]
     pool = [row_values(r) for r in produced]
-    for want in sorted((row_values(r) for r in gold), key=len, reverse=True):
-        match = next((i for i, have in enumerate(pool) if want <= have), None)
-        if match is None:
-            return False
-        pool.pop(match)
-    return True
+    if not wanted:
+        return True
+    if Counter(wanted) == Counter(pool):
+        return True
+
+    holders = defaultdict(set)
+    for i, have in enumerate(pool):
+        for value in have:
+            holders[value].add(i)
+
+    rows, cols = [], []
+    for i, want in enumerate(wanted):
+        fits = set.intersection(*(holders[v] for v in want)) if want else set(range(len(pool)))
+        rows += [i] * len(fits)
+        cols += fits
+    graph = csr_matrix((np.ones(len(rows), dtype=bool), (rows, cols)),
+                       shape=(len(wanted), len(pool)))
+    return bool((maximum_bipartite_matching(graph, perm_type='column') >= 0).all())
 
 
 def same_answer(gold, produced):
@@ -404,8 +491,10 @@ def validate_expert_system(nl_interface, resume=False):
     from nl_interface import MODEL
 
     print("\nExpert system validation")
-    results = (expert_checkpoint(MODEL) if resume else None) or []
+    tag = prompt_tag(MODEL)
+    results = (expert_checkpoint(tag) if resume else None) or []
     done = {r['id'] for r in results}
+    errored = False
 
     for item in EXPERT_QUERIES:
         if item['id'] in done:
@@ -415,24 +504,30 @@ def validate_expert_system(nl_interface, resume=False):
         except Exception as exc:
             result = query_result(item, False, 0, time.perf_counter(), str(exc))
             result['errored'] = True
+            errored = True
         results.append(result)
-        if resume:
-            expert_checkpoint(MODEL, [r for r in results if not r.get('errored')])
+        expert_checkpoint(tag, [r for r in results if not r.get('errored')])
         state = 'ERROR' if result.get('errored') else ('PASS' if result['passed'] else 'FAIL')
         print(f"  {item['id']:>3} {state:5s} {item['category']}")
 
+    if not errored:
+        expert_checkpoint_clear()
     return expert_accuracy(results, MODEL)
 
 
+# Describes the CBR arm. The cbr key is filled in at write time from the fold count.
 METHODOLOGY = {
-    'cbr': 'stratified cross-validation',
-    'confidence_intervals': f'95% bootstrap (n={BOOTSTRAP_SAMPLES})',
-    'calibration': 'ECE of the predicted success probability vs actual outcome; raw '
-                   'probability reported. Per-fold temperature scaling (leak-free) was '
-                   'tested and rejected as it raised ECE.',
-    'baseline': 'outcome=always-predict-success; regimen=most-frequent-regimen-per-profile',
-    'regimen_mode': 'diagnostic predictor: most-frequent regimen among retrieved neighbors '
-                    '(ignores outcome), to separate objective mismatch from weak retrieval',
+    'confidence_intervals': f'95% bootstrap (n={BOOTSTRAP_SAMPLES}) over the pooled '
+                            f'out-of-fold cases. fold_std is the spread of the per-fold '
+                            f'rates and is reported separately, not as the interval',
+    'calibration': 'ECE of the predicted success probability against the actual outcome, '
+                   'raw probability reported. Per-fold leak-free temperature scaling was '
+                   'tested and rejected because it raised ECE.',
+    'baseline': 'outcome=always-predict-success, regimen=most-frequent-regimen-per-profile, '
+                'fit per training fold and scored on the held-out fold',
+    'regimen_mode': 'diagnostic predictor, the most frequent regimen among retrieved '
+                    'neighbors, ignoring outcome, to separate objective mismatch from '
+                    'weak retrieval',
 }
 
 
@@ -453,31 +548,48 @@ def report_file(expert=None, cbr=None, cryptic=None, path=RESULTS):
     return data
 
 
+def rows(title, pairs, indent=2):
+    """Aligned label and value block, column width taken from the labels."""
+    print(f"\n{title}")
+    width = max(len(label) for label in pairs)
+    pad = " " * indent
+    for label, value in pairs.items():
+        print(f"{pad}{label:{width}s}  {value}")
+
+
+def interval(score):
+    return f"{score['mean']:.1%} [{score['ci_lower']:.1%}, {score['ci_upper']:.1%}]"
+
+
 def print_expert_summary(expert):
-    print("\nExpert system, natural language to Cypher")
-    print(f"  model     {expert['model']}")
-    print(f"  accuracy  {expert['overall']['rate']:.1%} "
-          f"(n={expert['overall']['n']}, execution match)")
-    for name, stats in expert['by_category'].items():
-        print(f"    {name:15s} {stats['rate']:.1%} (n={stats['n']})")
+    overall = expert['overall']
+    missed = {n: c for n, c in expert['by_category'].items() if c['rate'] < 1.0}
+    clean = len(expert['by_category']) - len(missed)
+
+    rows("Expert system, natural language to Cypher", {
+        'model': expert['model'],
+        'accuracy': f"{overall['rate']:.1%} (n={overall['n']}, execution match)",
+        **{name: f"{c['rate']:.1%} (n={c['n']})" for name, c in missed.items()},
+        **({'other': f"{clean} categories at 100.0%"} if clean else {}),
+    })
 
 
 def print_cbr_summary(cbr):
-    reg, out = cbr['regimen_accuracy'], cbr['outcome_accuracy']
-    mode, cal, base = cbr['regimen_mode_accuracy'], cbr['calibration'], cbr['baseline']
+    cal, base = cbr['calibration'], cbr['baseline']
 
-    print(f"\nCBR, {cbr['k']}-fold cross-validation")
-    print(f"  regimen        {reg['mean']:.1%} [{reg['ci_lower']:.1%}, {reg['ci_upper']:.1%}]")
-    print(f"  regimen mode   {mode['mean']:.1%} [{mode['ci_lower']:.1%}, {mode['ci_upper']:.1%}]")
-    print(f"  outcome        {out['mean']:.1%} [{out['ci_lower']:.1%}, {out['ci_upper']:.1%}]")
-    print(f"  ECE            {cal['ece']:.4f} raw, {cal['ece_temperature_scaled']:.4f} "
-          f"temperature scaled (rejected, T={cal['temperature_mean']})")
-    print(f"  Brier          {cal['brier']:.4f}")
-    print(f"  baseline       regimen {base['regimen']:.1%}, outcome {base['outcome']:.1%}")
-
-    print("\nCBR by profile")
-    for profile, p in cbr['by_profile'].items():
-        print(f"  {profile:14s} {p['accuracy']:.1%} (n={p['n']})")
+    rows(f"CBR, {cbr['k']}-fold cross-validation", {
+        'regimen': interval(cbr['regimen_accuracy']),
+        'regimen mode': interval(cbr['regimen_mode_accuracy']),
+        'outcome': interval(cbr['outcome_accuracy']),
+        'ECE': f"{cal['ece']:.4f} raw, {cal['ece_platt_scaled']:.4f} platt scaled, "
+               f"{cal['ece_temperature_scaled']:.4f} temperature scaled "
+               f"(rejected, T={cal['temperature_mean']})",
+        'Brier': f"{cal['brier']:.4f} raw, {cal['brier_platt_scaled']:.4f} platt scaled",
+        'baseline': f"regimen {base['regimen']:.1%}, outcome {base['outcome']:.1%}",
+    })
+    rows("CBR by profile",
+         {profile: f"{p['accuracy']:.1%} (n={p['n']})"
+          for profile, p in cbr['by_profile'].items()})
 
 
 def print_summary(data):
@@ -500,14 +612,15 @@ def collapse_tier(label):
 
 
 def tier_accuracy(truth, prediction):
-    """Overall, balanced, and macro-F1 accuracy with per-tier sensitivity and specificity."""
+    """Overall and balanced accuracy with macro-F1, over per-tier rates. The
+    per-tier figures live in rates alone. A second copy of sensitivity under the
+    name accuracy sat beside them and invited being read as one."""
     rates = {t: r for t, r in class_rates(truth, prediction, COLLAPSED).items() if r['n']}
     overall = float((prediction == truth).mean()) if len(truth) else 0.0
     return {
         'overall': round(overall, 3),
         'balanced': balanced_accuracy(rates),
         'macro_f1': macro_f1(rates),
-        'by_tier': {t: {'accuracy': r['sensitivity'], 'n': r['n']} for t, r in rates.items()},
         'rates': rates,
     }
 
@@ -521,7 +634,9 @@ def confusion(truth, prediction):
 
 
 def agreement(truth, engine, catalog):
-    """Splits resistant-tier errors into shared (biological ceiling) and engine-only."""
+    """Prediction match over all isolates, then resistant-tier errors split into
+    shared (biological ceiling) and engine-only. Match rate and McNemar discordance
+    are separate counts."""
     resistant = truth.isin(RESISTANT_TIERS)
     engine_ok, catalog_ok = engine == truth, catalog == truth
     engine_only = int((resistant & ~engine_ok & catalog_ok).sum())
@@ -529,6 +644,7 @@ def agreement(truth, engine, catalog):
 
     return {
         'engine_catalog_match': round(float((engine == catalog).mean()), 3),
+        'engine_catalog_disagreements': int((engine != catalog).sum()),
         'resistant_isolates': int(resistant.sum()),
         'both_correct': int((resistant & engine_ok & catalog_ok).sum()),
         'both_wrong': int((resistant & ~engine_ok & ~catalog_ok).sum()),
@@ -552,56 +668,6 @@ def diagnose(engine_eval, truth, engine, catalog):
         'resistant_drugs': sorted({r['drug'] for r in by_isolate.get(isolate, [])}),
         'mutations': [f"{r['gene']}_{r['mutation']}" for r in by_isolate.get(isolate, [])],
     } for isolate in ids]
-
-
-class IsolateOntology:
-    """Feeds per-isolate mutations to the rule engine without a database."""
-
-    def __init__(self, mutations):
-        self.mutations = mutations
-
-    def patient_strain_mapping(self, strain_id):
-        return None
-
-    def strain_mutations_detailed(self, strain_id):
-        return self.mutations.get(strain_id, [])
-
-
-class RuleEngineEvaluator:
-    name = 'rule_engine'
-
-    def __init__(self, effects_path, drugs):
-        self.effects_path = effects_path
-        self.drugs = drugs
-
-    def predictions(self, isolates):
-        import pandas as pd
-        from rule_engine import RuleEngine
-
-        by_isolate = self.mutations(isolates)
-        engine = RuleEngine(IsolateOntology(by_isolate))
-        engine.build_rules()
-        calls = {isolate: self.tier(engine, isolate) for isolate in by_isolate}
-        return pd.Series(calls).reindex(isolates).fillna('below-MDR')
-
-    def mutations(self, isolates):
-        import pandas as pd
-        from feature_engineering import flat
-
-        eff = flat(pd.read_parquet(self.effects_path,
-                   columns=['UNIQUEID', 'GENE', 'MUTATION', 'DRUG', 'PREDICTION']), 'GENE')
-        r = eff[(eff['PREDICTION'].astype(str) == 'R') & eff['UNIQUEID'].isin(isolates)].copy()
-        r['drug'] = r['DRUG'].astype(str).map(self.drugs)
-        r['gene'] = r['GENE'].astype('string').fillna('NA')
-        r['mutation'] = r['MUTATION'].astype('string').fillna('NA')
-        r = r.dropna(subset=['drug'])
-        return {isolate: g[['gene', 'drug', 'mutation']].assign(position='').to_dict('records')
-                for isolate, g in r.groupby('UNIQUEID')}
-
-    @staticmethod
-    def tier(engine, isolate):
-        classes = engine.evaluate_strain(isolate)['recommendations']['classifications']
-        return classes[0]['type'] if classes else 'below-MDR'
 
 
 class CatalogEvaluator:
@@ -654,32 +720,38 @@ def validate_classification():
 
 def print_class_scores(scores):
     for name, score in scores.items():
-        print(f"\n{name}  overall {score['overall']:.1%}, balanced {score['balanced']:.1%}, "
-              f"macro-F1 {score['macro_f1']:.3f}")
-        for tier in COLLAPSED:
-            if tier in score['rates']:
-                r = score['rates'][tier]
-                print(f"  {tier:10s} sens {r['sensitivity']:.1%}  spec {r['specificity']:.1%}  "
-                      f"ppv {r['precision']:.1%}  (R={r['n']})")
+        title = (f"{name}  overall {score['overall']:.1%}, "
+                 f"balanced {score['balanced']:.1%}, macro-F1 {score['macro_f1']:.3f}")
+        rows(title, {
+            tier: (f"sens {r['sensitivity']:.1%}  spec {r['specificity']:.1%}  "
+                   f"ppv {r['precision']:.1%}  (R={r['n']})")
+            for tier in COLLAPSED if (r := score['rates'].get(tier))
+        })
 
 
 def print_class_confusion(score):
     print("\nrule engine confusion, rows truth and columns predicted")
     table = score['confusion']
-    print("            " + "".join(f"{c:>11s}" for c in COLLAPSED))
+    label = max(len(t) for t in COLLAPSED)
+    counts = [f"{table[t][c]:,}" for t in COLLAPSED for c in COLLAPSED]
+    cell = max(len(v) for v in counts + COLLAPSED) + 2
+
+    print(" " * (label + 2) + "".join(f"{c:>{cell}s}" for c in COLLAPSED))
     for truth in COLLAPSED:
-        row = "".join(f"{table[truth][c]:>11d}" for c in COLLAPSED)
-        print(f"  {truth:10s}{row}")
+        row = "".join(f"{table[truth][c]:>{cell},}" for c in COLLAPSED)
+        print(f"  {truth:{label}s}{row}")
 
 
 def print_class_agreement(agree):
     mc = agree['mcnemar']
-    print("\nengine vs catalog on resistant-truth isolates")
-    print(f"  prediction match, all isolates  {agree['engine_catalog_match']:.1%}")
-    print(f"  both wrong, biological ceiling  {agree['both_wrong']}")
-    print(f"  engine only wrong, fixable      {agree['engine_only_wrong']}")
-    print(f"  catalog only wrong              {agree['catalog_only_wrong']}")
-    print(f"  McNemar chi2 {mc['chi2']}, p {mc['p_value']:.2e}, {mc['discordant']} discordant")
+    rows(f"engine vs catalog, prediction match {agree['engine_catalog_match']:.1%} "
+         f"over all isolates, {agree['engine_catalog_disagreements']} differ", {
+             'resistant truth': f"ceiling {agree['both_wrong']}, "
+                                f"engine only {agree['engine_only_wrong']}, "
+                                f"catalog only {agree['catalog_only_wrong']}",
+             'McNemar': f"chi2 {mc['chi2']}, p {mc['p_value']:.2e}, "
+                        f"{mc['discordant']} discordant",
+         })
 
 
 def print_classification(summary):
@@ -708,7 +780,7 @@ def graph_ontology():
 
 
 def system_validation(resume=False):
-    from cbr_cases import generate_cases
+    from cbr_cases import case_base
     from nl_interface import NLInterface
 
     ontology = graph_ontology()
@@ -717,7 +789,7 @@ def system_validation(resume=False):
     finally:
         ontology.close()
 
-    cases = generate_cases(N_CASES, seed=SEED)
+    cases = case_base(N_CASES, seed=SEED)
     return expert, validate_cbr(cases, K_FOLDS, SEED)
 
 

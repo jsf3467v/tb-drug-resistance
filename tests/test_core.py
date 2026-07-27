@@ -1,4 +1,5 @@
 import ast
+import json
 import sys
 from pathlib import Path
 
@@ -11,11 +12,13 @@ for _folder in (ROOT / "SRC", ROOT / "Evaluation"):
     if str(_folder) not in sys.path:
         sys.path.insert(0, str(_folder))
 
-from rule_engine import RuleEngine
-from cbr_cases import generate_cases
-from cbr_engine import CBREngine, CaseRetriever, SimilarityCalculator, FEATURE_ORDER
-from calibration import scaled_confidence, fit_temperature
+import cbr_engine
+import rule_engine
 import validation
+from calibration import fit_temperature, scaled_confidence
+from cbr_cases import case_base
+from cbr_engine import FEATURE_ORDER, CaseRetriever, CBREngine, SimilarityCalculator
+from rule_engine import RuleEngine
 
 SEVERITY = ["Susceptible", "MonoResistant", "PolyResistant", "MDR", "PreXDR", "XDR"]
 
@@ -40,7 +43,7 @@ def mutation(drug=None, gene=None, mid="m", position=0):
 def evaluate(mutations, mode="forward", goal=None):
     """Build the rule engine on a fake ontology and evaluate one strain."""
     engine = RuleEngine(FakeOntology(mutations))
-    engine.build_rules()
+
     return engine.evaluate_strain("TBX", mode=mode, goal=goal)
 
 
@@ -118,6 +121,54 @@ def test_prexdr_injectable_keeps_bpalm():
     assert "BPaLM" in regimen_names(out)
 
 
+def test_katg_315_matches_the_codon_not_the_digits():
+    # The CRyPTIC path supplies no position, so the old substring test flagged
+    # any katG token containing 315 anywhere.
+    real = [mutation(drug="isoniazid", gene="katG", mid="p.Ser315Thr", position="")]
+    decoy = [mutation(drug="isoniazid", gene="katG", mid="p.Ala3150Val", position="")]
+
+    assert RuleEngine(FakeOntology(real)).facts("TBX")["katG_315_mutation"]
+    assert not RuleEngine(FakeOntology(decoy)).facts("TBX")["katG_315_mutation"]
+    assert rule_engine.mutation_position({"mutation": "S315T", "position": ""}) == 315
+    assert rule_engine.mutation_position({"mutation": "c.-15C>T", "position": ""}) == -15
+
+
+def test_non_protocol_alerts_survive_classification_resolution():
+    # PreXDR and MDR both fire here. Only the superseded protocol alert should
+    # be dropped, not every alert that is not the winner's.
+    muts = [mutation(drug="rifampin", gene="rpoB"), mutation(drug="isoniazid", gene="katG"),
+            mutation(drug="amikacin", gene="rrs")]
+    out = evaluate(muts)["recommendations"]
+
+    assert [c["type"] for c in out["classifications"]] == ["PreXDR"]
+    kinds = {a["type"] for a in out["alerts"]}
+    assert "MDR_protocol" not in kinds
+    assert "PreXDR_protocol" in kinds
+
+
+FORWARD_BACKWARD_CASES = [
+    [mutation(drug="rifampin", gene="rpoB"), mutation(drug="isoniazid", gene="katG")],
+    [mutation(drug="rifampin", gene="rpoB"), mutation(drug="isoniazid", gene="katG"),
+     mutation(drug="levofloxacin", gene="gyrA")],
+    [mutation(drug="rifampin", gene="rpoB"), mutation(drug="isoniazid", gene="katG"),
+     mutation(drug="amikacin", gene="rrs")],
+    [mutation(drug="rifampin", gene="rpoB"), mutation(drug="isoniazid", gene="katG"),
+     mutation(drug="levofloxacin", gene="gyrA"), mutation(drug="amikacin", gene="rrs")],
+]
+
+
+@pytest.mark.parametrize("muts", FORWARD_BACKWARD_CASES)
+def test_forward_and_backward_agree(muts):
+    # Both modes are reachable from the interface, so they must not disagree on
+    # the same strain. Backward chaining reads the same treatment rules now.
+    forward = evaluate(muts)["recommendations"]
+    backward = evaluate(muts, mode="backward", goal="treatment")["recommendations"]
+
+    assert [c["type"] for c in forward["classifications"]] == \
+           [c["type"] for c in backward["classifications"]]
+    assert [r["name"] for r in forward["regimens"]] == [r["name"] for r in backward["regimens"]]
+
+
 def test_regimen_never_contains_excluded_drug():
     profiles = [
         [mutation("rifampin", "rpoB"), mutation("isoniazid", "katG", "k", 315)],
@@ -173,20 +224,124 @@ def test_fit_temperature_overconfident():
     assert fit_temperature(confidences, labels) > 1.0
 
 
-# CBR engine. outcome_probability is the raw predicted success rate
+# CBR engine. success_rate is the one reported probability, shared by the
+# interface and by validation, so no second copy can drift away from it.
 
 @pytest.fixture(scope="module")
 def base_cases():
-    return generate_cases(300, seed=42)
+    return case_base(300, seed=42)
 
 
-def test_outcome_probability_is_raw_success_rate(base_cases):
-    engine = CBREngine(base_cases)
-    query = {"profile": "MDR", "hiv_status": "negative", "age": 45, "sex": "M",
+MDR_QUERY = {"profile": "MDR", "hiv_status": "negative", "age": 45, "sex": "M",
              "region": "African", "diabetes": False, "previous_treatment": True}
-    a = engine.recommend(dict(query))
-    assert a["outcome_probability"] == pytest.approx(round(a["success_rate"], 3), abs=1e-9)
-    assert 0.0 <= a["outcome_probability"] <= 1.0
+
+
+def test_success_rate_is_the_only_probability(base_cases):
+    engine = CBREngine(base_cases)
+    a = engine.recommend(dict(MDR_QUERY))
+    neighbors = a["similar_cases"]
+    expected = sum(c["outcome"] == "success" for _, c in neighbors) / len(neighbors)
+
+    assert a["success_rate"] == pytest.approx(expected, abs=1e-12)
+    assert 0.0 <= a["success_rate"] <= 1.0
+    assert "outcome_probability" not in a
+    assert "weighted_success_rate" not in a["outcome_analysis"]
+
+
+def test_evidence_filter_runs_before_the_cut(base_cases):
+    # A regimen with enough support must survive even when thinly supported
+    # regimens outrank it, which slicing before filtering used to discard.
+    engine = CBREngine(base_cases)
+    engine.profile_regimens["MDR"] = {"One", "Two", "Three", "Supported"}
+    neighbors = [(1.0, {"regimen": "One", "outcome": "success"}),
+                 (1.0, {"regimen": "Two", "outcome": "success"}),
+                 (1.0, {"regimen": "Three", "outcome": "success"}),
+                 (1.0, {"regimen": "Supported", "outcome": "success"}),
+                 (1.0, {"regimen": "Supported", "outcome": "failed"})]
+
+    recs = engine.regimen_recommendations(neighbors, "MDR")
+    assert [r["regimen"] for r in recs] == ["Supported"]
+
+
+def test_recommendation_is_applicable_to_the_query_profile(base_cases):
+    # Retrieval admits neighbours from adjacent profiles, so a regimen the case
+    # base never pairs with the query profile could reach the top of the list.
+    # BPaLM carries moxifloxacin, which a fluoroquinolone-resistant patient
+    # cannot take, so this is a safety property rather than an accuracy one.
+    engine = CBREngine(base_cases)
+    pairs = {(c["profile"], c["regimen"]) for c in base_cases}
+
+    for profile in ("Susceptible", "MonoResistant", "PolyResistant",
+                    "MDR", "PreXDR", "XDR"):
+        query = dict(MDR_QUERY, profile=profile)
+        for rec in engine.recommend(query)["recommendations"]:
+            assert (profile, rec["regimen"]) in pairs
+
+
+def test_no_neighbors_falls_back_to_the_prior():
+    # Every feature is opposed, so only the region floor scores and nothing
+    # clears the cutoff. Reporting zero here would assert certain failure.
+    far = {"profile": "Susceptible", "hiv_status": "negative", "age": 20,
+           "region": "African", "diabetes": False, "previous_treatment": False,
+           "sex": "M", "regimen": "2HRZE_4HR", "year": 2024}
+    engine = CBREngine([dict(far, case_id="C1", outcome="success"),
+                        dict(far, case_id="C2", outcome="failed")])
+    query = {"profile": "XDR", "hiv_status": "positive", "age": 80,
+             "region": "Americas", "diabetes": True, "previous_treatment": True, "sex": "F"}
+    a = engine.recommend(query)
+
+    assert a["similar_cases"] == []
+    assert engine.prior_success == pytest.approx(0.5)
+    assert a["success_rate"] == pytest.approx(0.5)
+    assert a["recommendations"][0]["regimen"] == "BPaL"
+
+
+def test_explanations_stay_out_of_recommend(base_cases):
+    # The evaluation path reads none of this, so recommend must not build it.
+    engine = CBREngine(base_cases)
+    a = engine.recommend(dict(MDR_QUERY))
+    assert "explained_cases" not in a
+
+    explained = engine.explanations(dict(MDR_QUERY), a["similar_cases"])
+    assert 0 < len(explained) <= cbr_engine.EXPLAINED_CASES
+    assert {"case_id", "similarity", "feature_breakdown"} <= set(explained[0])
+
+
+def test_explanation_ranks_by_contribution(base_cases):
+    # Ranking on weight times similarity, not on a threshold, so the named
+    # features are the ones that actually moved the score.
+    calc = SimilarityCalculator(base_cases)
+    query = dict(MDR_QUERY)
+    for case in base_cases[:40]:
+        ex = calc.explain(query, case)
+        by_share = sorted(ex["breakdown"], key=lambda b: -b["contribution"])
+        assert ex["top_matches"] == [b["feature"] for b in by_share[:3]]
+        for feature in ex["key_differences"]:
+            assert next(b for b in ex["breakdown"] if b["feature"] == feature)["similarity"] < 1.0
+
+
+def test_region_mismatch_can_be_a_key_difference():
+    # The region floor once sat exactly on the old cutoff, which silently made
+    # a region mismatch unreportable however much similarity it cost.
+    calc = SimilarityCalculator([])
+    query = {"profile": "MDR", "hiv_status": "positive", "age": 40, "sex": "M",
+             "region": "African", "diabetes": True, "previous_treatment": True}
+    ex = calc.explain(query, dict(query, region="Americas"))
+
+    assert ex["key_differences"] == ["region"]
+
+
+def test_closeness_spans_the_admitted_range(base_cases):
+    engine = CBREngine(base_cases)
+    lowest = engine.confidence_calc.retrieval_score(cbr_engine.GOOD_CASE_COUNT,
+                                                     cbr_engine.MIN_SIMILARITY)
+    highest = engine.confidence_calc.retrieval_score(cbr_engine.GOOD_CASE_COUNT, 1.0)
+    assert lowest == pytest.approx(0.5)
+    assert highest == pytest.approx(1.0)
+
+    scores = {engine.recommend(c, exclude_id=c["case_id"])["confidence"]["score"]
+              for c in base_cases[:120]}
+    assert len(scores) > 1
 
 
 def test_retrieve_exclude_id(base_cases):
@@ -202,8 +357,7 @@ def test_vectorized_and_scalar_similarity_agree(base_cases):
     # weighted-similarity math. Pin them together so a change to one path that
     # is not mirrored in the other fails here, instead of silently making the
     # displayed breakdown disagree with the score that ranked the case.
-    calc = SimilarityCalculator()
-    calc.prepare(base_cases)
+    calc = SimilarityCalculator(base_cases)
     for query in base_cases[:3]:
         vectorized = list(calc.scores(query))
         scalar = [sum(calc.feature_funcs[f](query, case) * calc.weights[f]
@@ -215,16 +369,16 @@ def test_vectorized_and_scalar_similarity_agree(base_cases):
 # generator. deterministic and covers all six profiles
 
 def test_generator_deterministic():
-    assert generate_cases(200, seed=7) == generate_cases(200, seed=7)
+    assert case_base(200, seed=7) == case_base(200, seed=7)
 
 
 def test_generator_covers_six_profiles():
-    profiles = {c["profile"] for c in generate_cases(1000, seed=42)}
+    profiles = {c["profile"] for c in case_base(1000, seed=42)}
     assert profiles == set(SEVERITY)
 
 
 def test_susceptible_outperforms_xdr():
-    cases = generate_cases(1000, seed=42)
+    cases = case_base(1000, seed=42)
 
     def success(profile):
         sub = [c for c in cases if c["profile"] == profile]
@@ -233,17 +387,60 @@ def test_susceptible_outperforms_xdr():
     assert success("Susceptible") > success("XDR")
 
 
-def test_regimen_mode_tracks_baseline():
-    # The mode-of-neighbors predictor ignores outcome and takes the modal neighbor
-    # regimen. It should recover accuracy the outcome-ranked recommender loses to
-    # the objective mismatch and land closer to the majority baseline. Pins the
-    # diagnostic so a retrieval change that stops separating the two effects fails here.
-    cbr = validation.validate_cbr(generate_cases(1000, seed=42), k=5)
-    outcome_ranked = cbr["regimen_accuracy"]["mean"]
-    mode = cbr["regimen_mode_accuracy"]["mean"]
-    baseline = cbr["baseline"]["regimen"]
-    assert mode > outcome_ranked
-    assert abs(baseline - mode) < abs(baseline - outcome_ranked)
+def test_matching_retries_a_greedy_dead_end():
+    # A greedy pass takes the first produced row that fits and can strand the
+    # next gold row, reporting a mismatch on input that does pair up.
+    gold = [{"x": "a", "y": "b"}, {"x": "c", "y": "d"}]
+    produced = [{"x": "a", "y": "b", "z": "c", "w": "d"}, {"x": "a", "y": "b"}]
+    assert validation.same_answer(gold, produced)
+
+    unmatchable = [{"x": "a", "y": "b", "z": "c"}, {"x": "a", "y": "b"}]
+    assert not validation.same_answer(gold, unmatchable)
+
+
+def test_journal_survives_a_crash_and_clears_on_success(tmp_path, monkeypatch):
+    monkeypatch.setattr(validation, "EXPERT_CHECKPOINT", tmp_path / "journal.json")
+    monkeypatch.setattr(validation, "EXPERT_QUERIES", [
+        {"id": 1, "category": "unanswerable", "question": "q1", "unanswerable": True},
+        {"id": 2, "category": "unanswerable", "question": "q2", "unanswerable": True},
+    ])
+
+    class Crashing:
+        def __init__(self):
+            self.seen = 0
+
+        def generate_cypher(self, question):
+            self.seen += 1
+            if self.seen == 2:
+                raise RuntimeError("network down")
+            return "UNANSWERABLE: no"
+
+        def validate_cypher(self, cypher):
+            return False, "refused"
+
+    crashing = Crashing()
+    validation.validate_expert_system(crashing, resume=True)
+    assert validation.EXPERT_CHECKPOINT.exists()          # the paid call is kept
+    assert len(json.loads(validation.EXPERT_CHECKPOINT.read_text())["results"]) == 1
+
+    validation.validate_expert_system(crashing, resume=True)
+    assert not validation.EXPERT_CHECKPOINT.exists()      # a clean run leaves nothing
+
+
+def test_no_predictor_exceeds_the_generator_ceiling():
+    # The generator draws the regimen from profile and year alone, so the share
+    # held by the most common option bounds every predictor. A score above it
+    # means a held-out case reached the case base it was scored against.
+    # This replaced an assertion that the mode predictor beats the outcome-ranked
+    # one, which held only while the recommender could return a regimen that was
+    # not applicable to the query profile.
+    cbr = validation.validate_cbr(case_base(1000, seed=42), k=5)
+    ceiling = cbr["ceiling"]
+
+    assert cbr["baseline"]["regimen"] <= ceiling
+    assert cbr["regimen_accuracy"]["mean"] <= ceiling
+    assert cbr["regimen_mode_accuracy"]["mean"] <= ceiling
+    assert cbr["abstentions"] < len(case_base(1000, seed=42)) // 100
 
 
 def test_expert_queries_wellformed():
@@ -415,10 +612,43 @@ def test_unbalanced_delimiters_rejected(nl_interface):
     assert not nl_interface.validate_cypher("MATCH (n)-[r RETURN r")[0]
 
 
+def test_drug_aliases_copies_agree():
+    # feature_engineering keeps its own copy so it imports nothing from the
+    # system. Deliberate, but the two must not drift apart unnoticed.
+    import config
+    import feature_engineering
+
+    assert config.DRUG_ALIASES == feature_engineering.DRUG_ALIASES
+
+
 def test_canonical_drugs_rewrites_alias():
     from nl_interface import canonical_drugs
     out = canonical_drugs("MATCH (d:Drug {name: 'rifampicin'}) RETURN d")
     assert "'rifampin'" in out and "rifampicin" not in out
+
+
+def test_prompt_examples_obey_their_own_order_by_rule():
+    # The prompt tells the model that when RETURN aggregates, ORDER BY must name
+    # output aliases. Two examples demonstrated the opposite, and few-shot
+    # examples outweigh a prose rule, which is what runnable_cypher was patching
+    # at runtime. Pins the examples so an edit cannot reintroduce the conflict.
+    import re
+
+    from config import EXAMPLES
+    aggregates = ("collect(", "count(", "sum(", "avg(", "min(", "max(")
+    offenders = []
+
+    for block in [b for b in re.split(r"\n\s*\n", EXAMPLES) if "Cypher:" in b]:
+        body = block.split("Cypher:", 1)[1]
+        low = body.lower()
+        start, order = low.rfind("return"), low.rfind("order by")
+        if start == -1 or order < start:
+            continue
+        if any(a in low[start:order] for a in aggregates) and re.search(
+                r"\b[a-z]\w*\.\w+", body[order:]):
+            offenders.append(block.splitlines()[0])
+
+    assert not offenders, f"ORDER BY names a raw variable after an aggregate: {offenders}"
 
 
 def test_runnable_cypher_drops_aggregate_orderby():
@@ -431,6 +661,29 @@ def test_runnable_cypher_keeps_plain_orderby():
     from nl_interface import runnable_cypher
     plain = "MATCH (s:Strain) RETURN s.strain_id AS strain ORDER BY s.strain_id"
     assert runnable_cypher(plain) == plain
+
+
+def test_runnable_cypher_keeps_orderby_after_with_aggregate():
+    # An aggregate consumed by a WITH leaves the RETURN unaggregated, so its
+    # ORDER BY is legal. Examples 2 and 6 have this shape and were rewritten.
+    from nl_interface import runnable_cypher
+    query = ("MATCH (s:Strain)-[:HAS_MUTATION]->(m:Mutation)-[:CONFERS_RESISTANCE]->(x:Drug) "
+             "WITH s, collect(DISTINCT x.name) AS resistant "
+             "MATCH (d:Drug) WHERE NOT d.name IN resistant "
+             "RETURN d.name AS drug, d.class AS drug_class ORDER BY d.class, d.name")
+    assert runnable_cypher(query) == query
+
+
+def test_runnable_cypher_leaves_prompt_examples_alone():
+    import re
+
+    from config import EXAMPLES
+    from nl_interface import runnable_cypher
+
+    blocks = [b.split("Cypher:", 1)[1].strip()
+              for b in re.split(r"\nExample \d+:", EXAMPLES)[1:]]
+    rewritten = [q.splitlines()[0] for q in blocks if runnable_cypher(q) != q]
+    assert not rewritten, f"runtime patch rewrote a valid example: {rewritten}"
 
 
 def test_needs_rules_routing(nl_interface):
@@ -459,3 +712,265 @@ def test_paren_in_literal_allowed(nl_interface):
 def test_needs_rules_ignores_four_digit_id(nl_interface):
     # P1000 is a four-digit case id and must not be read as the patient P100
     assert nl_interface.needs_rules("show case P1000") is False
+
+def test_inference_modes_agree_on_every_resistance_combination():
+    # The evaluation scores forward and the application runs backward, so the
+    # graded fields must agree. Classification withholds regimens on purpose.
+    import itertools
+
+    drugs = {"rifampin": "rpoB", "isoniazid": "katG",
+             "levofloxacin": "gyrA", "amikacin": "rrs"}
+
+    def graded(recommendations):
+        return (
+            [c["type"] for c in recommendations["classifications"]],
+            sorted({e["drug"] for e in recommendations["exclusions"] if e["drug"]}),
+            sorted(a["type"] for a in recommendations["alerts"]),
+        )
+
+    def prescribed(recommendations):
+        return (sorted(r["name"] for r in recommendations["regimens"]),
+                sorted(m["parameter"] for m in recommendations["monitoring"]))
+
+    for size in range(len(drugs) + 1):
+        for combination in itertools.combinations(drugs, size):
+            muts = [mutation(d, drugs[d], f"{drugs[d]}_S315T", 315) for d in combination]
+            forward = evaluate(muts)["recommendations"]
+            treatment = evaluate(muts, mode="backward", goal="treatment")["recommendations"]
+            classification = evaluate(muts, mode="backward",
+                                      goal="classification")["recommendations"]
+
+            assert graded(treatment) == graded(forward), combination
+            assert graded(classification) == graded(forward), combination
+            assert prescribed(treatment) == prescribed(forward), combination
+            assert prescribed(classification) == ([], []), combination
+
+
+def test_forward_chain_bound_holds_the_whole_rule_set():
+    # Pins the bound, not the depth. Nothing currently chains that deep.
+    engine = RuleEngine(FakeOntology([]))
+    muts = [mutation("rifampin", "rpoB"), mutation("isoniazid", "katG", "katG_S315T", 315),
+            mutation("levofloxacin", "gyrA"), mutation("amikacin", "rrs")]
+    fired = evaluate(muts)["rules_fired"]
+    assert len(fired) == len(set(fired))
+    assert len(fired) <= len(engine.rules)
+
+
+def test_row_values_counts_repeats():
+    # Untagged sets let a narrower produced row satisfy a wider gold row. No
+    # current gold query repeats a value, so this guards rather than fixes.
+    assert validation.row_values({"a": 1, "b": 1}) != validation.row_values({"a": 1})
+    assert not validation.covers([{"a": 1, "b": 1}], [{"x": 1, "y": 2}])
+    assert validation.covers([{"a": 1, "b": 1}], [{"x": 1, "y": 1, "z": 2}])
+
+
+def test_case_generator_is_closed():
+    # A regimen missing a rate or a duration raises partway through a run
+    # rather than at import, so the tables are checked against each other.
+    from cbr_cases import BASE_SUCCESS, REGIMEN_DURATION, REGIMEN_OPTIONS, YEARS
+
+    pairs = {(profile, regimen) for profile, years in REGIMEN_OPTIONS.items()
+             for options in years.values() for regimen, _ in options}
+    regimens = {regimen for _, regimen in pairs}
+
+    assert pairs == set(BASE_SUCCESS)
+    assert regimens == set(REGIMEN_DURATION)
+    assert all(set(years) == {str(y) for y in YEARS} for years in REGIMEN_OPTIONS.values())
+    assert all(weight > 0 for options in REGIMEN_OPTIONS.values()
+               for year in options.values() for _, weight in year)
+
+
+def test_profile_vocabulary_agrees_across_modules():
+    # Five modules spell out the same six names. A partial rename shifts a
+    # number instead of raising.
+    import cbr_cases
+    import cbr_engine
+    import feature_engineering
+    import rule_engine
+
+    severity = set(feature_engineering.SEVERITY)
+    assert set(cbr_cases.PROFILE_TARGETS) == severity
+    assert set(cbr_cases.PROFILE_BASE_WEIGHT) == severity
+    assert set(cbr_cases.REGIMEN_OPTIONS) == severity
+    assert set(cbr_engine.PROFILE_RANK) == severity
+    assert set(cbr_cases.MINOR_RESISTANCE) | set(cbr_cases.MAJOR_RESISTANCE) | {
+        "Susceptible"} == severity
+    assert set(validation.RESISTANT_TIERS) <= severity
+    assert set(validation.COLLAPSED) == set(validation.RESISTANT_TIERS) | {"below-MDR"}
+    assert set(rule_engine.CLASS_SEVERITY) == set(validation.RESISTANT_TIERS)
+
+
+def test_mdr_tiers_do_not_depend_on_the_mono_poly_rule():
+    # Mono and poly deviate from WHO by counting every resistant drug. This
+    # holds the deviation below MDR, so no tier figure moves if it is revisited.
+    import itertools
+
+    from config import FIRST_LINE, FLUOROQUINOLONES, INJECTABLES
+    from feature_engineering import profile
+
+    pool = sorted(FIRST_LINE | {"levofloxacin", "amikacin", "ethionamide", "bedaquiline"})
+    tiers = {"MDR", "PreXDR", "XDR"}
+
+    for size in range(len(pool) + 1):
+        for combination in itertools.combinations(pool, size):
+            drugs = set(combination)
+            above = profile(drugs) in tiers
+            assert above == ({"rifampin", "isoniazid"} <= drugs), drugs
+
+    assert profile({"levofloxacin"}) == "MonoResistant"
+    assert profile({"levofloxacin", "amikacin"}) == "PolyResistant"
+    assert profile(set()) == "Susceptible"
+    assert FLUOROQUINOLONES and INJECTABLES
+
+
+def test_seed_mutation_ids_match_their_own_fields():
+    # Identifier and fields are written separately and can disagree silently.
+    import re
+
+    three = {"Ala": "A", "Arg": "R", "Asn": "N", "Asp": "D", "Cys": "C", "Gln": "Q",
+             "Glu": "E", "Gly": "G", "His": "H", "Ile": "I", "Leu": "L", "Lys": "K",
+             "Met": "M", "Phe": "F", "Pro": "P", "Ser": "S", "Thr": "T", "Trp": "W",
+             "Tyr": "Y", "Val": "V"}
+    wrong = []
+
+    for m in seed_blobs()["mutations"]:
+        protein = re.fullmatch(r"(\w+)_p\.([A-Za-z]{3})(-?\d+)([A-Za-z]{3})", m["id"])
+        base = re.fullmatch(r"(\w+)_[cn]\.(-?\d+)([ACGT])>([ACGT])", m["id"])
+        if protein:
+            gene, ref, pos, alt = protein.groups()
+            fields = (m["gene"], m["ref"], m["position"], m["alt"])
+            if (gene, three.get(ref), int(pos), three.get(alt)) != fields:
+                wrong.append(m["id"])
+        elif base:
+            gene, pos, ref, alt = base.groups()
+            if (gene, int(pos), ref, alt) != (m["gene"], m["position"], m["ref"], m["alt"]):
+                wrong.append(m["id"])
+
+    assert not wrong, wrong
+
+
+def test_compensatory_mutations_are_not_resistance():
+    # rpoC restores fitness lost to an rpoB mutation and confers no resistance
+    # itself, which is why its gene carries no drug target.
+    import tb_ontology
+
+    targets = {g["name"]: g["drug_target"] for g in tb_ontology.genes}
+    classes = {"fluoroquinolones": {"levofloxacin", "moxifloxacin"},
+               "aminoglycosides": {"amikacin", "kanamycin", "capreomycin"}}
+    mismatched = []
+
+    for m in tb_ontology.mutations:
+        if m.get("effect") == "compensatory":
+            assert targets[m["gene"]] is None, m["id"]
+            continue
+        target = targets.get(m["gene"])
+        allowed = classes.get(target, {target}) if target else set()
+        if m["drug"] not in allowed:
+            mismatched.append((m["id"], target, m["drug"]))
+
+    assert not mismatched, mismatched
+
+
+def test_seed_transmissions_run_forward_in_time():
+    # A strain cannot transmit to one collected before it, and nothing else
+    # compares the dates against the collection years.
+    import tb_ontology
+
+    year = {s["id"]: s["year"] for s in tb_ontology.strains}
+    backward = [(t["source"], t["target"]) for t in tb_ontology.transmissions
+                if year[t["target"]] < year[t["source"]]]
+    early = [(i["patient"], i["strain"]) for i in tb_ontology.patient_infections
+             if int(i["date"][:4]) < year[i["strain"]]]
+
+    assert not backward, backward
+    assert not early, early
+
+
+def test_every_self_reference_resolves():
+    # A missed call site passes lint and import and fails only when it runs.
+    # The graph builders need a database, so nothing else reaches them.
+    import ast
+
+    unresolved = []
+    for path in sorted(ROOT.rglob("*.py")):
+        tree = ast.parse(path.read_text())
+        for cls in [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]:
+            names = {f.name for f in ast.walk(cls) if isinstance(f, ast.FunctionDef)}
+            names |= {t.attr for n in ast.walk(cls) if isinstance(n, ast.Assign)
+                      for t in n.targets if isinstance(t, ast.Attribute)
+                      and isinstance(t.value, ast.Name) and t.value.id == "self"}
+            unresolved += [f"{path.name}:{n.lineno} {cls.name}.{n.attr}"
+                           for n in ast.walk(cls)
+                           if isinstance(n, ast.Attribute)
+                           and isinstance(n.value, ast.Name) and n.value.id == "self"
+                           and n.attr not in names and not n.attr.startswith("__")]
+
+    assert not unresolved, unresolved
+
+
+def test_platt_recovers_a_planted_distortion():
+    # A near-zero fitted slope on real data has to be readable as a finding
+    # rather than a failed fit, which is what the two plants separate.
+    import numpy as np
+    from calibration import confidence_logit, fit_platt, platt_confidence
+
+    rng = np.random.default_rng(0)
+    raw = rng.uniform(0.02, 0.98, 60000)
+    truth = platt_confidence(raw, 0.7, 1.2)
+    labels = (rng.uniform(size=raw.size) < truth).astype(float)
+
+    slope, intercept = fit_platt(raw, labels)
+    assert abs(slope - 0.7) < 0.05 and abs(intercept - 1.2) < 0.05
+
+    # a score carrying no signal must fit a slope of zero, not an arbitrary one
+    noise = rng.uniform(0.02, 0.98, 60000)
+    flat = (rng.uniform(size=noise.size) < 0.75).astype(float)
+    slope, intercept = fit_platt(noise, flat)
+    assert abs(slope) < 0.05
+    assert abs(1 / (1 + np.exp(-intercept)) - flat.mean()) < 0.02
+    assert fit_platt([], []) == (1.0, 0.0)
+    assert confidence_logit([0.5])[0] == 0.0
+
+
+def test_exclusions_name_drugs_not_classes():
+    # A row labeled with the class should set the flag but not reach the
+    # exclusion list, where it read as a drug in a clinical readout.
+    import rule_engine
+
+    labels = {label for label, _ in rule_engine.DRUG_CLASSES.values()}
+    members = {d for _, drugs in rule_engine.DRUG_CLASSES.values() for d in drugs}
+    assert not labels & members
+
+    muts = [mutation("levofloxacin", "gyrA", "gyrA_D94G", 94),
+            mutation("amikacin", "rrs", "rrs_a1401g", 1401)]
+    excluded = {e["drug"] for e in evaluate(muts)["recommendations"]["exclusions"]}
+    assert not excluded & labels
+    assert "levofloxacin" in excluded and "moxifloxacin" in excluded
+    assert rule_engine.DRUG_FLAG.get("fluoroquinolone") == "fluoroquinolone_resistance"
+
+
+def test_answer_prompt_forbids_inferring_susceptibility():
+    # The engine reaches about four fifths of measured resistance, so a drug
+    # with no graded mutation is untested rather than susceptible.
+    from nl_interface import NLInterface
+
+    interface = NLInterface(FakeOntology([]), api_key="test-key")
+    prompt = interface.answer_prompt("q", "MATCH (n) RETURN n", [{"a": 1}], None, None)
+
+    assert "untested, not susceptible" in prompt
+    assert "no emoji" in prompt
+
+
+def test_formulary_is_narrower_than_the_cross_resistance_class():
+    # The gap looks like drift, and closing it would let the app offer a drug no
+    # longer recommended. config states why; this stops the repair.
+    import tb_ontology
+    from config import FLUOROQUINOLONES, GROUP_A_FLUOROQUINOLONES, INJECTABLES
+
+    modeled = {d["name"] for d in tb_ontology.drugs}
+    assert GROUP_A_FLUOROQUINOLONES < FLUOROQUINOLONES
+    assert modeled & FLUOROQUINOLONES == GROUP_A_FLUOROQUINOLONES
+    assert not {"ciprofloxacin", "ofloxacin"} & modeled
+
+    # injectables carry no such split, so all three are modeled
+    assert INJECTABLES <= modeled
