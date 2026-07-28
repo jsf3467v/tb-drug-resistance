@@ -179,23 +179,23 @@ Cypher: MATCH (s:Strain)
         ORDER BY lineage
 """
 
-# Drug-name variants. The WHO spelling rifampicin maps to the catalog's American
-# spelling rifampin, so a query on either name resolves to the same drug node.
+# Resistance profiles, least to most severe. Scoring and retrieval both rank by
+# this order, so it cannot differ between them.
+SEVERITY = ('Susceptible', 'MonoResistant', 'PolyResistant', 'MDR', 'PreXDR', 'XDR')
+
+# WHO spells this rifampicin; the catalog and the graph use rifampin.
 DRUG_ALIASES = {'rifampicin': 'rifampin'}
 
-# Drug classes, defined once and read by the profile in feature_engineering and
-# the class flags in rule_engine.
-#
-# These name every drug sharing a resistance mechanism, which is wider than what
-# a patient can be given, since a gyrA mutation confers cross-resistance whether
-# or not a member is still prescribed. The graph models the Group A pair alone,
-# because WHO no longer recommends ciprofloxacin or ofloxacin. The gap between
-# the two is deliberate and a test holds it.
-FIRST_LINE = {'rifampin', 'isoniazid', 'ethambutol', 'pyrazinamide'}
+# Every drug sharing a resistance mechanism, which is wider than what a patient can
+# be given: a gyrA mutation confers cross-resistance whether or not a member is
+# still prescribed. The seed graph models levofloxacin and moxifloxacin alone,
+# since WHO no longer recommends the others. A test holds that gap.
 FLUOROQUINOLONES = {'levofloxacin', 'moxifloxacin', 'ofloxacin', 'ciprofloxacin',
                     'gatifloxacin', 'sitafloxacin', 'fluoroquinolone'}
-INJECTABLES = {'amikacin', 'kanamycin', 'capreomycin'}
+INJECTABLES = {'amikacin', 'kanamycin', 'capreomycin', 'injectable'}
 
-# The fluoroquinolones current guidance prescribes. The graph models these; the
-# class above scores against all of them.
-GROUP_A_FLUOROQUINOLONES = {'levofloxacin', 'moxifloxacin'}
+# Each class carries its own name as a member, so a source naming the class where a
+# drug is expected still raises it. That name is not prescribable, so anything
+# building a formulary or a drug picker subtracts CLASS_LABELS first.
+CROSS_RESISTANCE = {'fluoroquinolone': FLUOROQUINOLONES, 'injectable': INJECTABLES}
+CLASS_LABELS = frozenset(CROSS_RESISTANCE)

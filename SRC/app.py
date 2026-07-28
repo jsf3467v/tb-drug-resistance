@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 import streamlit as st
+
 from cbr_engine import CaseStore, graph_cases
 from nl_interface import LLMUnavailable, NLInterface
 from tb_ontology import TBOntology
@@ -94,35 +95,61 @@ def rule_metrics(rule_output):
 
 
 def rule_recommendations(recs):
-    if recs.get('classifications'):
-        st.write("**Classifications:**")
-        for c in recs['classifications']:
-            st.write(f"- {c['type']} (Rule: {c['rule']}, Source: {c['source']})")
-    else:
+    classification_block(recs.get('classifications'))
+    regimen_block(recs.get('regimens'))
+    listing_block("Additional Drugs Indicated", recs.get('inclusions'), inclusion_line)
+    listing_block("Drug Exclusions", recs.get('exclusions'), exclusion_line)
+    monitoring_block(recs.get('monitoring'))
+    listing_block("Clinical Alerts", recs.get('alerts'),
+                  lambda a: f"- {a['type']} (Rule: {a['rule']})")
+
+
+def listing_block(title, items, line):
+    if not items:
+        return
+    st.write(f"**{title}:**")
+    for item in items:
+        st.write(line(item))
+
+
+def inclusion_line(i):
+    rationale = f" (Reason: {i['rationale']})" if i.get('rationale') else ""
+    return f"- {i['drug']}{rationale} (Rule: {i['rule']})"
+
+
+def exclusion_line(e):
+    return f"- Exclude {e['drug']} (Reason: {e['reason']}, Rule: {e['rule']})"
+
+
+def classification_block(classifications):
+    if not classifications:
         st.write("No MDR-class resistance detected (below-MDR).")
+        return
+    st.write("**Classifications:**")
+    for c in classifications:
+        st.write(f"- {c['type']} (Rule: {c['rule']}, Source: {c['source']})")
 
-    if recs.get('regimens'):
-        st.write("**Treatment Regimens:**")
-        for r in recs['regimens']:
-            st.write(f"- {r['name']}: {', '.join(r['drugs'])}")
-            st.write(f"  Duration: {r['duration']} (Rule: {r['rule']})")
 
-    if recs.get('exclusions'):
-        st.write("**Drug Exclusions:**")
-        for e in recs['exclusions']:
-            st.write(f"- Exclude {e['drug']} (Reason: {e['reason']}, Rule: {e['rule']})")
+def regimen_block(regimens):
+    if not regimens:
+        return
+    st.write("**Treatment Regimens:**")
+    for r in regimens:
+        st.write(f"- {r['name']}: {', '.join(r['drugs'])}")
+        st.write(f"  Duration: {r['duration']} (Rule: {r['rule']})")
+        if r.get('contraindicated'):
+            st.warning(f"{r['name']} contains {', '.join(r['contraindicated'])}, "
+                       "which this strain is resistant to. Substitution required.")
 
-    if recs.get('monitoring'):
-        st.write("**Monitoring Required:**")
-        for m in recs['monitoring']:
-            st.write(f"- {m['parameter']}")
-            if m.get('threshold'):
-                st.write(f"  Threshold: {m['threshold']}")
 
-    if recs.get('alerts'):
-        st.write("**Clinical Alerts:**")
-        for a in recs['alerts']:
-            st.write(f"- {a['type']} (Rule: {a['rule']})")
+def monitoring_block(monitoring):
+    if not monitoring:
+        return
+    st.write("**Monitoring Required:**")
+    for m in monitoring:
+        st.write(f"- {m['parameter']}")
+        if m.get('threshold'):
+            st.write(f"  Threshold: {m['threshold']}")
 
 
 def display_query_profile(cbr_output):

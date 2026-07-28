@@ -71,18 +71,20 @@ The release also ships `DATA_SCHEMA.pdf`, documenting the full set of tables, an
 The WHO catalog comes from the World Health Organization. The CRyPTIC tables come from the CRyPTIC consortium release on Zenodo. The synthetic patient cases are produced in code and need no download. Reading the parquet tables needs the pyarrow engine, which `requirements.txt` installs.
 
 A seventh file, `Datasets/cryptic_features.parquet`, is not downloaded. The first
-run that needs it builds it from the four parquet tables and the drug code map,
-then reuses that copy on every later run. Nothing invalidates it
-automatically, so delete it after replacing any source table, or the scores will
-silently be computed from the old data.
+run that needs it builds it from `DST_MEASUREMENTS.parquet`,
+`UKMYC_PHENOTYPES.parquet`, `PREDICTIONS.parquet`, and `DRUG_CODES.csv`, then
+reuses that copy on every later run. The cache carries its own invalidation: it
+is rebuilt whenever any of those four, or `feature_engineering.py`, or
+`config.py` is newer than the cached file, so replacing a source table is enough
+and no manual delete is needed. `EFFECTS.parquet` and the WHO workbook are read
+directly and are not cached at all.
+
+Rebuild explicitly to print the isolate count, the label balance, and the
+DST/UKMYC concordance the README reports.
 
 ```bash
-rm -f Datasets/cryptic_features.parquet
 python SRC/feature_engineering.py
 ```
-
-Rebuilding also prints the isolate count, the label balance, and the DST/UKMYC
-concordance the README reports.
 
 ## 5. Environment
 
@@ -116,7 +118,7 @@ This clears the graph, applies the schema, loads the seed strains and patients, 
 python SRC/who_catalog.py           # the catalog parses, writes nothing
 python SRC/cbr_cases.py             # the generator runs, writes nothing
 python SRC/feature_engineering.py   # rebuilds the label cache
-python -m pytest tests/ -q          # 77 tests, no database and no API
+python -m pytest tests/ -q          # 121 tests, no database and no API
 python Evaluation/metrics.py        # per-drug scores, no database and no API
 python Evaluation/validation.py     # rebuilds the graph, calls the API
 ```
@@ -145,7 +147,7 @@ From there you can ask questions in plain English and query the synthetic data, 
 python -m pytest tests/ -q
 ```
 
-The 77 tests need no database, API, or datasets, so they run immediately after the install step, provided `pytest` was installed there. The suite runs from the project root or from inside `tests/`. The same suite runs in continuous integration on every push, across Python 3.10, 3.11, and 3.12.
+The 121 tests need no database, API, or datasets, so they run immediately after the install step, provided `pytest` was installed there. The suite runs from the project root or from inside `tests/`. The same suite runs in continuous integration on every push, across Python 3.10, 3.11, and 3.12.
 
 ## Managing the container
 
@@ -160,7 +162,7 @@ docker rm memgraph       # remove once stopped
 - If the application cannot reach the database, confirm the container maps port 7687 and that `NEO4J_URI` points to `bolt://localhost:7687`.
 - If Memgraph fails to start, check the `vm.max_map_count` setting described in the Memgraph system configuration guide.
 - If the expert-system arm of the validation is skipped, the API key is missing or unreachable. The CRyPTIC classification arm still runs and writes its results.
-- If the scores do not move after you replace a dataset, the derived cache is stale. Delete `Datasets/cryptic_features.parquet` and run again.
+- If the scores do not move after you replace a dataset, check that the replacement carries a newer modification time than `Datasets/cryptic_features.parquet`. Copying a file can preserve the original timestamp, which is the one case the cache cannot see; delete the cache and run again.
 - If `pytest` is not found, install it as shown in section 3. It is not a runtime dependency.
 - If the expert arm re-queries when you expected it to resume, the schema or the prompt examples changed since the journal was written, so the results produced under the old prompt were discarded rather than mixed with new ones.
 - If the application reports no cases after a scoring run, section 6.2 cleared the graph. Click Initialize CBR again to reload them.

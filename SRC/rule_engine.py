@@ -1,35 +1,33 @@
-from config import FLUOROQUINOLONES, INJECTABLES
+from config import CLASS_LABELS, CROSS_RESISTANCE
 
 HIGH_CONF_GENES = ('rpoB', 'katG', 'inhA', 'embB', 'pncA', 'gyrA')
 
-# Which resistance flag each drug raises. The class members come from config, so
-# the engine grades a class exactly as wide as the label definition treats it.
-DRUG_FLAG = {'rifampin': 'rifampin_resistance', 'isoniazid': 'isoniazid_resistance'}
-DRUG_FLAG.update(dict.fromkeys(FLUOROQUINOLONES, 'fluoroquinolone_resistance'))
-DRUG_FLAG.update(dict.fromkeys(INJECTABLES, 'injectable_resistance'))
+BPAL_DRUGS = ['bedaquiline', 'pretomanid', 'linezolid']
+BPALM_DRUGS = BPAL_DRUGS + ['moxifloxacin']
 
-# Cross-resistance is a class effect, so one member firing excludes the class.
-# Sorted, because set order varies between processes and the report would too.
-# A source may label a row with the class name rather than a drug, which still
-# sets the flag, but a class is not something a patient can be excluded from and
-# must not reach the exclusion list beside real drug names.
-CLASS_SPEC = (('fluoroquinolone_resistance', 'fluoroquinolone', FLUOROQUINOLONES),
-              ('injectable_resistance', 'injectable', INJECTABLES))
-DRUG_CLASSES = {flag: (label, sorted(members - {label}))
-                for flag, label, members in CLASS_SPEC}
-CLASS_LABELS = {label for _, label, _ in CLASS_SPEC}
+# Derived from config, so the engine grades a class exactly as wide as the label.
+DRUG_FLAG = {'rifampin': 'rifampin_resistance', 'isoniazid': 'isoniazid_resistance'}
+DRUG_FLAG.update({drug: f'{label}_resistance'
+                  for label, members in CROSS_RESISTANCE.items() for drug in members})
+
+# No BPaL drug is a class member, so this guard is inert today.
+DRUG_FLAG.update({drug: f'{drug}_resistance' for drug in BPAL_DRUGS
+                  if drug not in DRUG_FLAG})
+
+# One member firing excludes the whole class. Sorted, because set order varies
+# between processes.
+DRUG_CLASSES = {f'{label}_resistance': (label, sorted(members - CLASS_LABELS))
+                for label, members in CROSS_RESISTANCE.items()}
 
 CLASS_SEVERITY = {'MDR': 1, 'PreXDR': 2, 'XDR': 3}
 
 # Conditions naming a classification read the flag the classifier set.
 CLASSIFICATION_GOALS = ('mdr', 'xdr', 'prexdr')
 
-
-# BPaLM adds a fluoroquinolone (moxifloxacin) to BPaL, so it is valid only when
-# fluoroquinolones are not contraindicated. With fluoroquinolone resistance the
-# fluoroquinolone-free BPaL regimen is used instead.
-BPAL_DRUGS = ['bedaquiline', 'pretomanid', 'linezolid']
-BPALM_DRUGS = BPAL_DRUGS + ['moxifloxacin']
+# RC003 implements a fixed external definition, so the pair is named rather than
+# derived from CROSS_RESISTANCE, which would widen pre-XDR whenever a class is
+# registered. They are also the only flags facts() indexes without a default.
+PREXDR_CLASSES = ('fluoroquinolone_resistance', 'injectable_resistance')
 
 
 class Rule:
@@ -39,7 +37,6 @@ class Rule:
         self.conditions = conditions
         self.actions = actions
         self.source = source
-        self.confidence = 1.0
 
 
 class RuleEngine:
@@ -68,9 +65,9 @@ class RuleEngine:
             source='WHO 2022 Guidelines'
         )
 
-    # XDR and pre-XDR use the pre-2021 (2006) injectable-based WHO definitions, not
-    # the current Group A based ones, because the data carries no bedaquiline or
-    # linezolid phenotypes the 2021 definition needs. Deliberate. See README Limitations.
+    # XDR and pre-XDR use the pre-2021 (2006) injectable-based definitions, not
+    # the current Group A based ones. Bedaquiline and linezolid phenotypes exist
+    # in the release but are thin and weakly graded. See README Limitations.
 
     def xdr_detection(self):
         return Rule(
@@ -133,7 +130,7 @@ class RuleEngine:
         return Rule(
             rule_id='TS004',
             priority=3,
-            conditions={'fluoroquinolone_resistance': True},
+            conditions={'fluoroquinolone_resistance': True, 'bedaquiline_resistance': False},
             actions={'include': 'bedaquiline', 'rationale': 'FQ resistance'},
             source='WHO 2022 Guidelines'
         )
@@ -142,27 +139,29 @@ class RuleEngine:
         return Rule(
             rule_id='TS005',
             priority=3,
-            conditions={'xdr': True},
+            conditions={'xdr': True, 'linezolid_resistance': False},
             actions={'include': 'linezolid'},
             source='WHO 2022 Guidelines'
         )
 
     def evaluate_strain(self, strain_id, mode='forward', goal=None):
-        facts = self.facts(strain_id)
-        self.working_memory = facts
-        self.fired = []
-
-        if mode == 'backward' and goal:
-            results = self.backward_chain(goal)
-        else:
-            results = self.forward_chain()
-
+        results = self.strain_recommendations(strain_id, mode, goal)
         return {
             'strain': strain_id,
             'recommendations': results,
             'rules_fired': self.fired,
-            'canonical_gene_fraction': self.canonical_gene_fraction(facts['mutations'])
+            'canonical_gene_fraction': self.canonical_gene_fraction(
+                self.working_memory['mutations'])
         }
+
+    def strain_recommendations(self, strain_id, mode='forward', goal=None):
+        """Recommendations alone. Scoring reads only these and runs once per
+        isolate per arm, so the interface fields stay off that path."""
+        self.working_memory = self.facts(strain_id)
+        self.fired = []
+        if mode == 'backward' and goal:
+            return self.backward_chain(goal)
+        return self.forward_chain()
 
     def facts(self, strain_id):
         if strain_id.startswith('P'):
@@ -174,21 +173,17 @@ class RuleEngine:
         mutations = self.ontology.strain_mutations_detailed(strain_id)
         facts = self.base_facts(strain_id, mutations)
         facts.update(self.mutation_flags(mutations))
-        facts['fluoroquinolone_or_injectable'] = (
-            facts['fluoroquinolone_resistance'] or facts['injectable_resistance'])
+        facts['fluoroquinolone_or_injectable'] = any(facts[f] for f in PREXDR_CLASSES)
         return facts
 
     def base_facts(self, strain_id, mutations):
-        flags = ['rifampin_resistance', 'isoniazid_resistance', 'fluoroquinolone_resistance',
-                 'injectable_resistance', 'mdr_classified', 'xdr_classified',
-                 'prexdr_classified']
-        facts = {flag: False for flag in flags}
+        facts = dict.fromkeys(PREXDR_CLASSES, False)
         facts['strain_id'] = strain_id
         facts['mutations'] = mutations
         return facts
 
     def mutation_flags(self, mutations):
-        """Resistance flag per mutation. Only flags a rule reads are derived."""
+        """Resistance flag per drug the mutations name."""
         flags = {}
         for mut in mutations:
             flag = DRUG_FLAG.get(mut.get('drug'))
@@ -197,10 +192,9 @@ class RuleEngine:
         return flags
 
     def forward_chain(self):
-        """Fire every matching rule, repeating while the last pass changed the
-        working memory. A rule fires once, so the passes are bounded by the rule
-        count. A fixed bound smaller than that would silently drop the tail of a
-        deeper chain if one were added."""
+        """Repeat while the last pass changed working memory. A rule fires once, so
+        the rule count bounds the passes; a smaller fixed bound would silently
+        truncate a deeper chain."""
         recommendations = self.empty_recommendations()
         by_priority = sorted(self.rules, key=lambda r: r.priority)
 
@@ -216,19 +210,23 @@ class RuleEngine:
 
                 if self.match(rule):
                     self.fire(rule, recommendations)
-                    self.fired.append(rule.id)
                     changed = True
 
         self.resolve_classification(recommendations)
-        self.direct_exclusions(recommendations)
-        self.class_exclusions(recommendations)
-        self.regimen_monitoring(recommendations)
+        self.reconcile(recommendations)
         return recommendations
 
+    def reconcile(self, recommendations):
+        """Shared by both inference paths. regimen_conflicts reads self.excluded,
+        so the exclusion passes must run before it."""
+        self.direct_exclusions(recommendations)
+        self.class_exclusions(recommendations)
+        self.regimen_conflicts(recommendations)
+        self.regimen_monitoring(recommendations)
+
     def resolve_classification(self, recommendations):
-        """Keep the most severe classification. The protocol alerts belonging to
-        the ones it supersedes go with it, and alerts of any other kind are left
-        alone rather than being filtered out with them."""
+        """Keep the most severe classification and drop the protocol alerts of the
+        ones it supersedes. Alerts of any other kind survive."""
         classes = recommendations['classifications']
         if not classes:
             return
@@ -258,6 +256,14 @@ class RuleEngine:
                 self.add_exclusion(recommendations, drug, 'CLASS_CROSS_RESISTANCE',
                                     f'{label}_cross_resistance')
 
+    def regimen_conflicts(self, recommendations):
+        """Name the regimen drugs the isolate is resistant to. Annotates rather
+        than drops, since choosing a substitute is a clinical decision."""
+        for regimen in recommendations['regimens']:
+            blocked = sorted(self.excluded.intersection(regimen['drugs']))
+            if blocked:
+                regimen['contraindicated'] = blocked
+
     def match(self, rule):
         for condition, value in rule.conditions.items():
             fact = f'{condition}_classified' if condition in CLASSIFICATION_GOALS else condition
@@ -266,6 +272,11 @@ class RuleEngine:
         return True
 
     def fire(self, rule, recommendations):
+        """Recorded here rather than at the call site, so a rule reached by either
+        inference path lands in the audit trail the same way."""
+        if rule.id not in self.fired:
+            self.fired.append(rule.id)
+
         for action, value in rule.actions.items():
             if action == 'classify':
                 self.fire_classify(rule, value, recommendations)
@@ -278,15 +289,13 @@ class RuleEngine:
 
     def fire_classify(self, rule, value, recommendations):
         self.working_memory[f'{value.lower()}_classified'] = True
-        recommendations['classifications'].append({
-            'type': value, 'rule': rule.id, 'source': rule.source, 'confidence': rule.confidence})
+        recommendations['classifications'].append(
+            {'type': value, 'rule': rule.id, 'source': rule.source})
 
     def add_exclusion(self, recommendations, drug, rule_id, reason):
-        """First reason for excluding a drug wins. Membership is read from a set
-        rather than by scanning the list, which was rescanning every entry on
-        every call and is the one quadratic step on the CRyPTIC path. A source
-        row may name the class rather than a member, which sets the flag but is
-        not something a patient can be excluded from."""
+        """First reason wins. Membership reads a set, not a list scan, which was the
+        one quadratic step on the CRyPTIC path. Class labels are skipped: a
+        patient cannot be excluded from a class."""
         if not drug or drug in CLASS_LABELS or drug in self.excluded:
             return
         self.excluded.add(drug)
@@ -318,9 +327,8 @@ class RuleEngine:
                     {'parameter': parameter, 'threshold': threshold, 'rule': rule_id})
 
     def canonical_gene_fraction(self, mutations):
-        # Share of distinct mutations whose gene is a canonical resistance gene.
-        # This reads gene membership only, not the WHO grading tier. One row per
-        # mutation-drug edge arrives here, so distinct mutations keep it stable.
+        # Reads gene membership only, not the WHO grading tier. Deduped, because one
+        # row per mutation-drug edge arrives here and would double-count.
         genes = {(mut.get('gene'), mut.get('mutation')): mut.get('gene') for mut in mutations}
         if not genes:
             return 0.0
@@ -335,9 +343,7 @@ class RuleEngine:
         elif goal == 'classification':
             self.backward_classification(recommendations)
 
-        self.direct_exclusions(recommendations)
-        self.class_exclusions(recommendations)
-        self.regimen_monitoring(recommendations)
+        self.reconcile(recommendations)
         return recommendations
 
     def backward_treatment(self, recommendations):
@@ -348,15 +354,13 @@ class RuleEngine:
             self.fire(detected(), recommendations)
             self.fire_treatment(recommendations)
 
-        if self.working_memory.get('fluoroquinolone_resistance'):
-            self.fire(self.bedaquiline_indication(), recommendations)
-        if self.working_memory.get('xdr_classified'):
-            self.fire(self.linezolid_indication(), recommendations)
+        for rule in (self.bedaquiline_indication(), self.linezolid_indication()):
+            if self.match(rule):
+                self.fire(rule, recommendations)
 
     def fire_treatment(self, recommendations):
-        """First treatment rule whose conditions hold. Reading the same rules
-        forward chaining uses keeps the two paths from drifting apart, which a
-        second copy of the conditions in Python would not."""
+        """First treatment rule whose conditions hold. Built from the same factory
+        methods forward chaining uses, so the two paths cannot drift apart."""
         for rule in (self.treatment_xdr(), self.treatment_prexdr(),
                      self.treatment_mdr()):
             if self.match(rule):

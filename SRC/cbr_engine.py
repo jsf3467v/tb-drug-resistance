@@ -4,10 +4,12 @@ the retrieved neighbors received together with how often those regimens
 succeeded.
 """
 
-from collections import Counter
+from collections import Counter, defaultdict
 
 import numpy as np
+
 from cbr_cases import DEFAULT_CASES, DEFAULT_SEED, case_base
+from config import SEVERITY
 
 FEATURE_ORDER = ['profile', 'previous_treatment', 'hiv_status', 'region', 'age', 'diabetes', 'sex']
 FEATURE_WEIGHTS = {
@@ -19,10 +21,7 @@ FEATURE_WEIGHTS = {
     'diabetes': 0.07,
     'sex': 0.04
 }
-PROFILE_RANK = {
-    'Susceptible': 0, 'MonoResistant': 1, 'PolyResistant': 2,
-    'MDR': 3, 'PreXDR': 4, 'XDR': 5
-}
+PROFILE_RANK = {name: rank for rank, name in enumerate(SEVERITY)}
 PROFILE_SPAN = max(PROFILE_RANK.values())
 
 # Substituted when a case or a query omits a feature.
@@ -70,40 +69,27 @@ STRONG_EVIDENCE_RATE = 0.70
 FAIR_EVIDENCE_CASES = 3
 FAIR_EVIDENCE_RATE = 0.55
 
-DEFAULT_REGIMENS = {
-    'Susceptible': '2HRZE_4HR',
-    'MonoResistant': '6REZ_Lfx',
-    'PolyResistant': 'Individualized_12mo',
-    'MDR': 'BPaLM',
-    'PreXDR': 'BPaL',
-    'XDR': 'BPaL'
-}
 
-# Graph writes.
 CASE_BATCH = 100
 CASE_LIMIT = 100
 
 
 class SimilarityCalculator:
+    """One similarity definition, evaluated on column arrays. explain() runs it
+    over a single-case column set, so the breakdown cannot drift from the score."""
+
     def __init__(self, cases=()):
         self.weights = FEATURE_WEIGHTS
-        self.feature_funcs = {
-            'profile': self.profile_similarity,
-            'previous_treatment': self.previous_tx_similarity,
-            'hiv_status': self.hiv_similarity,
-            'region': self.region_similarity,
-            'age': self.age_similarity,
-            'diabetes': self.diabetes_similarity,
-            'sex': self.sex_similarity
-        }
         self.columns = self.case_columns(cases)
 
     @staticmethod
     def case_columns(cases):
-        """Case base as column arrays, built in a single pass."""
+        """Case base as column arrays, built in a single pass. Categoricals stay
+        object typed so an empty base still compares elementwise."""
         values = {name: [] for name in FEATURE_ORDER}
         for case in cases:
-            values['profile'].append(PROFILE_RANK.get(case.get('profile', DEFAULT_PROFILE), UNKNOWN_PROFILE_RANK))
+            values['profile'].append(
+                PROFILE_RANK.get(case.get('profile', DEFAULT_PROFILE), UNKNOWN_PROFILE_RANK))
             values['previous_treatment'].append(bool(case.get('previous_treatment', False)))
             values['hiv_status'].append(case.get('hiv_status', DEFAULT_HIV))
             values['region'].append(case.get('region', DEFAULT_REGION))
@@ -112,33 +98,38 @@ class SimilarityCalculator:
             values['sex'].append(case.get('sex', DEFAULT_SEX))
 
         numeric = ('profile', 'age')
-        return {name: np.array(column, dtype=float if name in numeric else None)
+        return {name: np.array(column, dtype=float if name in numeric else object)
                 for name, column in values.items()}
 
-    def scores(self, query_case):
-        """Weighted similarity of the query to every stored case, vectorized."""
-        p = self.columns
-        w = self.weights
-        q_rank = PROFILE_RANK.get(query_case.get('profile', DEFAULT_PROFILE), UNKNOWN_PROFILE_RANK)
-        age_gap = np.abs(p['age'] - query_case.get('age', DEFAULT_AGE))
-        q_tx = bool(query_case.get('previous_treatment', False))
+    def feature_scores(self, query, columns):
+        """Per-feature similarity of one query against a column set, vectorized."""
+        rank = PROFILE_RANK.get(query.get('profile', DEFAULT_PROFILE), UNKNOWN_PROFILE_RANK)
+        gap = np.abs(columns['age'] - query.get('age', DEFAULT_AGE))
+        return {
+            'profile': 1.0 - np.abs(columns['profile'] - rank) / PROFILE_SPAN,
+            'previous_treatment': (columns['previous_treatment'] ==
+                                   bool(query.get('previous_treatment', False))).astype(float),
+            'hiv_status': (columns['hiv_status'] ==
+                           query.get('hiv_status', DEFAULT_HIV)).astype(float),
+            'region': np.where(columns['region'] == query.get('region', DEFAULT_REGION),
+                               1.0, REGION_FLOOR),
+            'age': np.maximum(0.0, 1.0 - gap / AGE_SCALE),
+            'diabetes': (columns['diabetes'] ==
+                         bool(query.get('diabetes', False))).astype(float),
+            'sex': (columns['sex'] == query.get('sex', DEFAULT_SEX)).astype(float),
+        }
 
-        total = w['profile'] * (1.0 - np.abs(p['profile'] - q_rank) / PROFILE_SPAN)
-        total = total + w['hiv_status'] * (p['hiv_status'] ==
-                                           query_case.get('hiv_status', DEFAULT_HIV))
-        total = total + w['age'] * np.maximum(0.0, 1.0 - age_gap / AGE_SCALE)
-        total = total + w['region'] * np.where(
-            p['region'] == query_case.get('region', DEFAULT_REGION), 1.0, REGION_FLOOR)
-        total = total + w['diabetes'] * (p['diabetes'] ==
-                                         bool(query_case.get('diabetes', False)))
-        total = total + w['previous_treatment'] * (p['previous_treatment'] == q_tx)
-        return total + w['sex'] * (p['sex'] == query_case.get('sex', DEFAULT_SEX))
+    def scores(self, query):
+        """Weighted similarity of the query to every stored case."""
+        parts = self.feature_scores(query, self.columns)
+        return sum(self.weights[f] * parts[f] for f in FEATURE_ORDER)
 
     def explain(self, query, case):
         """Per-feature breakdown of one pairing, ranked by the similarity each
-        feature contributed or cost. The ranking key is rounded first, so equal
+        feature contributed or cost. Keys are rounded first, so equal
         contributions tie on feature order rather than on float representation."""
-        sims = {f: self.feature_funcs[f](query, case) for f in FEATURE_ORDER}
+        parts = self.feature_scores(query, self.case_columns([case]))
+        sims = {f: float(parts[f][0]) for f in FEATURE_ORDER}
         contribution = {f: round(sims[f] * self.weights[f], RANK_PRECISION)
                         for f in FEATURE_ORDER}
         deficit = {f: round(self.weights[f] - contribution[f], RANK_PRECISION)
@@ -177,32 +168,6 @@ class SimilarityCalculator:
         if sim >= PARTIAL_MATCH:
             return 'partial'
         return 'different'
-
-    def profile_similarity(self, case1, case2):
-        r1 = PROFILE_RANK.get(case1.get('profile', DEFAULT_PROFILE), UNKNOWN_PROFILE_RANK)
-        r2 = PROFILE_RANK.get(case2.get('profile', DEFAULT_PROFILE), UNKNOWN_PROFILE_RANK)
-        return 1.0 - abs(r1 - r2) / PROFILE_SPAN
-
-    def hiv_similarity(self, case1, case2):
-        return float(case1.get('hiv_status', DEFAULT_HIV) == case2.get('hiv_status', DEFAULT_HIV))
-
-    def age_similarity(self, case1, case2):
-        diff = abs(case1.get('age', DEFAULT_AGE) - case2.get('age', DEFAULT_AGE))
-        return max(0.0, 1.0 - diff / AGE_SCALE)
-
-    def region_similarity(self, case1, case2):
-        same = case1.get('region', DEFAULT_REGION) == case2.get('region', DEFAULT_REGION)
-        return 1.0 if same else REGION_FLOOR
-
-    def diabetes_similarity(self, case1, case2):
-        return float(bool(case1.get('diabetes', False)) == bool(case2.get('diabetes', False)))
-
-    def previous_tx_similarity(self, case1, case2):
-        return float(bool(case1.get('previous_treatment', False)) ==
-                     bool(case2.get('previous_treatment', False)))
-
-    def sex_similarity(self, case1, case2):
-        return float(case1.get('sex', DEFAULT_SEX) == case2.get('sex', DEFAULT_SEX))
 
 
 # Confidence factors. Retrieval is evidence volume and closeness, consistency
@@ -354,6 +319,15 @@ class OutcomeAnalyzer:
         return ['Older age'] if fail_avg > success_avg + AGE_RISK_GAP else []
 
 
+def regimen_modes(cases):
+    """Modal regimen within each profile, ties broken by name. The per-profile
+    baseline in validation and the CBR fallback read this one definition."""
+    counts = defaultdict(Counter)
+    for case in cases:
+        counts[case.get('profile')][case.get('regimen')] += 1
+    return {profile: min(c, key=lambda r: (-c[r], r)) for profile, c in counts.items()}
+
+
 class CaseRetriever:
     def __init__(self, cases):
         self.cases = cases
@@ -395,6 +369,7 @@ class CBREngine:
         self.outcome_analyzer = OutcomeAnalyzer()
         self.prior_success = self.success_share(cases)
         self.profile_regimens = self.regimens_by_profile(cases)
+        self.profile_modes = regimen_modes(cases)
 
     @staticmethod
     def regimens_by_profile(cases):
@@ -447,10 +422,11 @@ class CBREngine:
         }
 
     def success_rate(self, similar_cases):
-        """Share of neighbors that succeeded. The interface and validation both
-        read this one figure, unrounded, so calibration sees the estimate."""
+        """Laplace-smoothed share of neighbors that succeeded, read by both the
+        interface and validation. A raw share reaches zero and one, where a logit
+        is undefined."""
         successes = sum(case['outcome'] == 'success' for _, case in similar_cases)
-        return successes / len(similar_cases)
+        return (successes + 1) / (len(similar_cases) + 2)
 
     def regimen_stats(self, similar_cases):
         stats = {}
@@ -505,19 +481,16 @@ class CBREngine:
         return explained
 
     def default_recommendation(self, query_case):
-        """No neighbor cleared the cutoff, so the reported probability falls back
-        to the case base prior rather than zero."""
-        profile = query_case.get('profile', DEFAULT_PROFILE)
+        """No neighbor cleared the cutoff, so both the probability and the regimen
+        fall back to the case base rather than to a separate guideline table that
+        could drift from it. A profile the base has never seen abstains."""
+        mode = self.profile_modes.get(query_case.get('profile', DEFAULT_PROFILE))
         return {
             'query_profile': self.query_summary(query_case),
             'similar_cases': [],
             'success_rate': self.prior_success,
-            'recommendations': [{
-                'regimen': DEFAULT_REGIMENS.get(profile, DEFAULT_REGIMENS[DEFAULT_PROFILE]),
-                'success_rate': 0.0,
-                'evidence_cases': 0,
-                'confidence': 'low'
-            }],
+            'recommendations': [{'regimen': mode, 'success_rate': 0.0,
+                                 'evidence_cases': 0, 'confidence': 'low'}] if mode else [],
             'confidence': self.confidence_calc.empty_confidence(),
             'outcome_analysis': {'distribution': {}, 'risk_factors': []}
         }
@@ -531,19 +504,9 @@ class CaseStore:
         if not self.ontology:
             return 0
 
-        self.constraints()
         for i in range(0, len(cases), batch_size):
             self.batch(cases[i:i + batch_size])
         return len(cases)
-
-    def constraints(self):
-        # Idempotent. A backend holding the constraint already, or spelling it
-        # differently, must not stop the write that follows.
-        query = "CREATE CONSTRAINT case_id IF NOT EXISTS FOR (c:Case) REQUIRE c.case_id IS UNIQUE"
-        try:
-            self.ontology.query(query)
-        except Exception:
-            pass
 
     def batch(self, cases):
         query = """

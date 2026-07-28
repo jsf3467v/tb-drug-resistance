@@ -3,6 +3,7 @@ import json
 import sys
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 # Runs from Evaluation/. SRC/ and Evaluation/ are added to the import path so the core modules below resolve.
@@ -18,9 +19,10 @@ import validation
 from calibration import fit_temperature, scaled_confidence
 from cbr_cases import case_base
 from cbr_engine import FEATURE_ORDER, CaseRetriever, CBREngine, SimilarityCalculator
+from config import SEVERITY
+from feature_engineering import second_line_coverage
+from metrics import wilson_interval
 from rule_engine import RuleEngine
-
-SEVERITY = ["Susceptible", "MonoResistant", "PolyResistant", "MDR", "PreXDR", "XDR"]
 
 
 class FakeOntology:
@@ -121,6 +123,39 @@ def test_prexdr_injectable_keeps_bpalm():
     assert "BPaLM" in regimen_names(out)
 
 
+CONTRAINDICATION_CASES = (
+    ([("rifampin", "rpoB"), ("isoniazid", "katG"), ("bedaquiline", "Rv0678")], "bedaquiline"),
+    ([("rifampin", "rpoB"), ("isoniazid", "katG"), ("linezolid", "rplC")], "linezolid"),
+    ([("rifampin", "rpoB"), ("isoniazid", "katG"), ("levofloxacin", "gyrA"),
+      ("bedaquiline", "Rv0678")], "bedaquiline"),
+)
+
+
+@pytest.mark.parametrize("pairs,blocked", CONTRAINDICATION_CASES)
+@pytest.mark.parametrize("mode,goal", (("forward", None), ("backward", "treatment")))
+def test_regimen_names_its_contraindicated_drugs(pairs, blocked, mode, goal):
+    # The regimen still carries the drug, so the conflict has to be stated rather
+    # than left for the reader to intersect two lists.
+    muts = [mutation(drug, gene) for drug, gene in pairs]
+    recommendations = evaluate(muts, mode=mode, goal=goal)["recommendations"]
+
+    for regimen in recommendations["regimens"]:
+        if blocked in regimen["drugs"]:
+            assert blocked in regimen.get("contraindicated", []), regimen["name"]
+
+
+@pytest.mark.parametrize("pairs,blocked", CONTRAINDICATION_CASES)
+@pytest.mark.parametrize("mode,goal", (("forward", None), ("backward", "treatment")))
+def test_inclusions_never_name_an_excluded_drug(pairs, blocked, mode, goal):
+    # TS004 used to recommend bedaquiline on fluoroquinolone resistance alone, even
+    # for an isolate carrying an Rv0678 mutation.
+    muts = [mutation(drug, gene) for drug, gene in pairs]
+    recommendations = evaluate(muts, mode=mode, goal=goal)["recommendations"]
+
+    excluded = {e["drug"] for e in recommendations["exclusions"]}
+    assert not {i["drug"] for i in recommendations["inclusions"]} & excluded
+
+
 def test_non_protocol_alerts_survive_classification_resolution():
     # PreXDR and MDR both fire here. Only the superseded protocol alert should
     # be dropped, not every alert that is not the winner's.
@@ -134,27 +169,14 @@ def test_non_protocol_alerts_survive_classification_resolution():
     assert "PreXDR_protocol" in kinds
 
 
-FORWARD_BACKWARD_CASES = [
-    [mutation(drug="rifampin", gene="rpoB"), mutation(drug="isoniazid", gene="katG")],
-    [mutation(drug="rifampin", gene="rpoB"), mutation(drug="isoniazid", gene="katG"),
-     mutation(drug="levofloxacin", gene="gyrA")],
-    [mutation(drug="rifampin", gene="rpoB"), mutation(drug="isoniazid", gene="katG"),
-     mutation(drug="amikacin", gene="rrs")],
-    [mutation(drug="rifampin", gene="rpoB"), mutation(drug="isoniazid", gene="katG"),
-     mutation(drug="levofloxacin", gene="gyrA"), mutation(drug="amikacin", gene="rrs")],
-]
+def flag_representatives():
+    """One drug per resistance flag, plus a drug that raises none. Every other
+    drug reaches the rules through one of these flags or through no flag, so
+    subsets of this pool are the whole state space the engine tells apart."""
+    from rule_engine import DRUG_FLAG
 
-
-@pytest.mark.parametrize("muts", FORWARD_BACKWARD_CASES)
-def test_forward_and_backward_agree(muts):
-    # Both modes are reachable from the interface, so they must not disagree on
-    # the same strain. Backward chaining reads the same treatment rules now.
-    forward = evaluate(muts)["recommendations"]
-    backward = evaluate(muts, mode="backward", goal="treatment")["recommendations"]
-
-    assert [c["type"] for c in forward["classifications"]] == \
-           [c["type"] for c in backward["classifications"]]
-    assert [r["name"] for r in forward["regimens"]] == [r["name"] for r in backward["regimens"]]
+    per_flag = {flag: drug for drug, flag in sorted(DRUG_FLAG.items())}
+    return sorted(per_flag.values()) + ["ethambutol"]
 
 
 def test_regimen_never_contains_excluded_drug():
@@ -210,6 +232,38 @@ def test_fit_temperature_overconfident():
     assert fit_temperature(confidences, labels) > 1.0
 
 
+def test_saturated_confidence_inflates_the_fitted_temperature():
+    # A score of exactly one clips to a logit near fourteen and dominates the
+    # likelihood. The engine smooths the rate so this cannot reach the fit.
+    labels = [1.0] * 90 + [0.0] * 10
+    saturated = fit_temperature([1.0] * 100, labels)
+    bounded = fit_temperature([0.95] * 100, labels)
+    assert saturated > 3 * bounded
+
+
+def test_success_rate_never_saturates():
+    engine = CBREngine(case_base(300, seed=42))
+    neighbors = engine.recommend(dict(MDR_QUERY))["similar_cases"]
+    every_case = [(1.0, {"outcome": "success"})] * len(neighbors)
+    assert 0.0 < engine.success_rate(every_case) < 1.0
+
+
+def test_wilson_interval_brackets_the_rate_at_small_n():
+    lower, upper = wilson_interval(10, 11)
+    assert lower < 10 / 11 < upper
+    assert upper < 1.0 and lower > 0.0
+    assert wilson_interval(0, 0) == (0.0, 0.0)
+
+
+def test_second_line_coverage_needs_both_classes():
+    calls = pd.DataFrame({
+        "UNIQUEID": ["a", "a", "b", "b", "c"],
+        "drug": ["levofloxacin", "amikacin", "levofloxacin", "rifampin", "rifampin"],
+    })
+    covered = second_line_coverage(["a", "b", "c", "d"], calls)
+    assert list(covered) == [True, False, False, False]
+
+
 # CBR engine. success_rate is the one reported probability, shared by the
 # interface and by validation, so no second copy can drift away from it.
 
@@ -226,7 +280,7 @@ def test_success_rate_is_the_only_probability(base_cases):
     engine = CBREngine(base_cases)
     a = engine.recommend(dict(MDR_QUERY))
     neighbors = a["similar_cases"]
-    expected = sum(c["outcome"] == "success" for _, c in neighbors) / len(neighbors)
+    expected = (sum(c["outcome"] == "success" for _, c in neighbors) + 1) / (len(neighbors) + 2)
 
     assert a["success_rate"] == pytest.approx(expected, abs=1e-12)
     assert 0.0 <= a["success_rate"] <= 1.0
@@ -250,7 +304,7 @@ def test_evidence_filter_runs_before_the_cut(base_cases):
 
 
 def test_recommendation_is_applicable_to_the_query_profile(base_cases):
-    # Retrieval admits neighbours from adjacent profiles, so a regimen the case
+    # Retrieval admits neighbors from adjacent profiles, so a regimen the case
     # base never pairs with the query profile could reach the top of the list.
     # BPaLM carries moxifloxacin, which a fluoroquinolone-resistant patient
     # cannot take, so this is a safety property rather than an accuracy one.
@@ -279,7 +333,13 @@ def test_no_neighbors_falls_back_to_the_prior():
     assert a["similar_cases"] == []
     assert engine.prior_success == pytest.approx(0.5)
     assert a["success_rate"] == pytest.approx(0.5)
-    assert a["recommendations"][0]["regimen"] == "BPaL"
+
+    # The fallback regimen comes from the case base, not a separate table, so a
+    # profile the base has never carried abstains instead of inventing one.
+    assert a["recommendations"] == []
+    known = engine.recommend(dict(query, profile="Susceptible"))
+    assert known["similar_cases"] == []
+    assert known["recommendations"][0]["regimen"] == "2HRZE_4HR"
 
 
 def test_explanations_stay_out_of_recommend(base_cases):
@@ -337,19 +397,18 @@ def test_retrieve_exclude_id(base_cases):
     assert all(case.get("case_id") != excluded for _, case in found)
 
 
-def test_vectorized_and_scalar_similarity_agree(base_cases):
-    # scores() (vectorized, used for ranking) and the per-feature _*_similarity
-    # functions (used by explain() for the UI breakdown) duplicate the same
-    # weighted-similarity math. Pin them together so a change to one path that
-    # is not mirrored in the other fails here, instead of silently making the
-    # displayed breakdown disagree with the score that ranked the case.
+def test_explain_reproduces_the_ranking_score(base_cases):
+    # explain() feeds the breakdown shown in the UI and scores() feeds the
+    # ranking. Both call feature_scores, so this pins the one definition to both
+    # paths: the contributions must sum to the score that ranked the case.
     calc = SimilarityCalculator(base_cases)
     for query in base_cases[:3]:
-        vectorized = list(calc.scores(query))
-        scalar = [sum(calc.feature_funcs[f](query, case) * calc.weights[f]
-                      for f in FEATURE_ORDER)
-                  for case in base_cases]
-        assert vectorized == pytest.approx(scalar, abs=1e-9)
+        ranked = list(calc.scores(query))
+        for i, case in enumerate(base_cases[:20]):
+            parts = calc.explain(query, case)["breakdown"]
+            total = sum(f["similarity"] * calc.weights[f["feature"]] for f in parts)
+            assert {f["feature"] for f in parts} == set(FEATURE_ORDER)
+            assert total == pytest.approx(ranked[i], abs=1e-9)
 
 
 # generator. deterministic and covers all six profiles
@@ -430,7 +489,7 @@ def test_no_predictor_exceeds_the_generator_ceiling():
 
 
 def test_expert_queries_wellformed():
-    queries = validation.expert_queries()
+    queries = validation.EXPERT_QUERIES
     ids = [q["id"] for q in queries]
     assert len(ids) == len(set(ids))                     # ids are unique
     for q in queries:
@@ -455,21 +514,6 @@ def seed_blobs():
     return blobs
 
 
-def derived_profile(drugs):
-    drugs = set(drugs)
-    rif, inh = "rifampin" in drugs, "isoniazid" in drugs
-    fq = {"levofloxacin", "moxifloxacin"} & drugs
-    inj = {"amikacin", "kanamycin", "capreomycin"} & drugs
-    if rif and inh and fq and inj:
-        return "XDR"
-    if rif and inh and (fq or inj):
-        return "PreXDR"
-    if rif and inh:
-        return "MDR"
-    first_line = len(drugs & {"rifampin", "isoniazid", "ethambutol", "pyrazinamide"})
-    return "PolyResistant" if first_line > 1 else ("MonoResistant" if first_line else "Susceptible")
-
-
 def test_seed_mutations_exist():
     blobs = seed_blobs()
     defined = {m["id"] for m in blobs["mutations"]}
@@ -478,13 +522,17 @@ def test_seed_mutations_exist():
 
 
 def test_stored_profiles_match_mutations():
+    # The stored profiles are checked against the rule feature_engineering applies
+    # to CRyPTIC, so the seed graph and the labeled set carry one convention.
+    from feature_engineering import profile
+
     blobs = seed_blobs()
     drug = {m["id"]: m.get("drug") for m in blobs["mutations"]}
     mismatches = []
     for record in blobs["strain_data"]:
-        drugs = {drug.get(m) for m in record["mutations"]}
-        if derived_profile(drugs) != record["profile"]:
-            mismatches.append((record["strain"], record["profile"], derived_profile(drugs)))
+        drugs = {drug.get(m) for m in record["mutations"]} - {None}
+        if profile(drugs) != record["profile"]:
+            mismatches.append((record["strain"], record["profile"], profile(drugs)))
     assert mismatches == [], f"profile/mutation mismatches: {mismatches}"
 
 
@@ -524,7 +572,7 @@ class FakeNL:
 
 
 def query(test_id):
-    return {q["id"]: q for q in validation.expert_queries()}[test_id]
+    return {q["id"]: q for q in validation.EXPERT_QUERIES}[test_id]
 
 
 def test_unanswerable_passes_when_refused():
@@ -649,6 +697,16 @@ def test_runnable_cypher_keeps_plain_orderby():
     assert runnable_cypher(plain) == plain
 
 
+def test_runnable_cypher_keeps_orderby_before_limit():
+    # Without a LIMIT the clause only reorders, so dropping it preserves the
+    # answer. With one it selects which rows survive, and dropping it while
+    # keeping the LIMIT returned a different set.
+    from nl_interface import runnable_cypher
+    query = ("MATCH (m:Mutation)-[:IN_GENE]->(g:Gene) RETURN g.name AS gene, "
+             "count(m) AS c ORDER BY c DESC, g.name LIMIT 10")
+    assert runnable_cypher(query) == query
+
+
 def test_runnable_cypher_keeps_orderby_after_with_aggregate():
     # An aggregate consumed by a WITH leaves the RETURN unaggregated, so its
     # ORDER BY is legal. Examples 2 and 6 have this shape and were rewritten.
@@ -699,13 +757,24 @@ def test_needs_rules_ignores_four_digit_id(nl_interface):
     # P1000 is a four-digit case id and must not be read as the patient P100
     assert nl_interface.needs_rules("show case P1000") is False
 
+def test_rules_fired_is_the_one_field_the_modes_differ_on():
+    # Forward chaining reaches the pre-XDR rule on an XDR isolate, backward
+    # chaining stops once XDR is proved. The trace differs, the outcome does not.
+    muts = [mutation(d, "g") for d in ("rifampin", "isoniazid", "levofloxacin", "amikacin")]
+    forward = evaluate(muts)
+    backward = evaluate(muts, mode="backward", goal="treatment")
+
+    assert forward["recommendations"] == backward["recommendations"]
+    assert set(forward["rules_fired"]) - set(backward["rules_fired"]) == {"RC003"}
+
+
 def test_inference_modes_agree_on_every_resistance_combination():
     # The evaluation scores forward and the application runs backward, so the
     # graded fields must agree. Classification withholds regimens on purpose.
+    # No compared field reads the gene, so one placeholder covers the pool.
     import itertools
 
-    drugs = {"rifampin": "rpoB", "isoniazid": "katG",
-             "levofloxacin": "gyrA", "amikacin": "rrs"}
+    pool = flag_representatives()
 
     def graded(recommendations):
         return (
@@ -715,12 +784,14 @@ def test_inference_modes_agree_on_every_resistance_combination():
         )
 
     def prescribed(recommendations):
-        return (sorted(r["name"] for r in recommendations["regimens"]),
-                sorted(m["parameter"] for m in recommendations["monitoring"]))
+        return (sorted((r["name"], tuple(r.get("contraindicated", ())))
+                       for r in recommendations["regimens"]),
+                sorted(m["parameter"] for m in recommendations["monitoring"]),
+                sorted(i["drug"] for i in recommendations["inclusions"]))
 
-    for size in range(len(drugs) + 1):
-        for combination in itertools.combinations(drugs, size):
-            muts = [mutation(d, drugs[d], f"{drugs[d]}_S315T", 315) for d in combination]
+    for size in range(len(pool) + 1):
+        for combination in itertools.combinations(pool, size):
+            muts = [mutation(drug, "g") for drug in combination]
             forward = evaluate(muts)["recommendations"]
             treatment = evaluate(muts, mode="backward", goal="treatment")["recommendations"]
             classification = evaluate(muts, mode="backward",
@@ -729,7 +800,7 @@ def test_inference_modes_agree_on_every_resistance_combination():
             assert graded(treatment) == graded(forward), combination
             assert graded(classification) == graded(forward), combination
             assert prescribed(treatment) == prescribed(forward), combination
-            assert prescribed(classification) == ([], []), combination
+            assert prescribed(classification) == ([], [], []), combination
 
 
 def test_forward_chain_bound_holds_the_whole_rule_set():
@@ -779,6 +850,7 @@ def test_profile_vocabulary_agrees_across_modules():
     assert set(cbr_cases.PROFILE_BASE_WEIGHT) == severity
     assert set(cbr_cases.REGIMEN_OPTIONS) == severity
     assert set(cbr_engine.PROFILE_RANK) == severity
+    assert list(cbr_engine.PROFILE_RANK) == list(feature_engineering.SEVERITY)
     assert set(cbr_cases.MINOR_RESISTANCE) | set(cbr_cases.MAJOR_RESISTANCE) | {
         "Susceptible"} == severity
     assert set(validation.RESISTANT_TIERS) <= severity
@@ -791,10 +863,11 @@ def test_mdr_tiers_do_not_depend_on_the_mono_poly_rule():
     # holds the deviation below MDR, so no tier figure moves if it is revisited.
     import itertools
 
-    from config import FIRST_LINE, FLUOROQUINOLONES, INJECTABLES
+    from config import FLUOROQUINOLONES, INJECTABLES
     from feature_engineering import profile
 
-    pool = sorted(FIRST_LINE | {"levofloxacin", "amikacin", "ethionamide", "bedaquiline"})
+    pool = ["rifampin", "isoniazid", "ethambutol", "pyrazinamide",
+            "levofloxacin", "amikacin", "ethionamide", "bedaquiline"]
     tiers = {"MDR", "PreXDR", "XDR"}
 
     for size in range(len(pool) + 1):
@@ -898,6 +971,7 @@ def test_platt_recovers_a_planted_distortion():
     # A near-zero fitted slope on real data has to be readable as a finding
     # rather than a failed fit, which is what the two plants separate.
     import numpy as np
+
     from calibration import confidence_logit, fit_platt, platt_confidence
 
     rng = np.random.default_rng(0)
@@ -947,19 +1021,55 @@ def test_answer_prompt_forbids_inferring_susceptibility():
     assert "no emoji" in prompt
 
 
+def test_class_labels_are_members_but_not_drugs():
+    # Each class carries its own name so a source naming the class still raises
+    # it. The name is not prescribable, so it must not survive into exclusions.
+    from config import CLASS_LABELS, CROSS_RESISTANCE
+    from rule_engine import DRUG_CLASSES, DRUG_FLAG
+
+    assert CLASS_LABELS == set(CROSS_RESISTANCE)
+    for label, members in CROSS_RESISTANCE.items():
+        assert label in members, label
+        assert DRUG_FLAG[label] == f"{label}_resistance", label
+    for _, members in DRUG_CLASSES.values():
+        assert not CLASS_LABELS & set(members)
+
+
+def test_prexdr_pair_is_named_not_derived():
+    # RC003 encodes a fixed external definition. Deriving its fact from config
+    # would widen the tier the moment another cross-resistance class registered.
+    from config import CROSS_RESISTANCE
+    from rule_engine import PREXDR_CLASSES
+
+    assert PREXDR_CLASSES == ("fluoroquinolone_resistance", "injectable_resistance")
+    assert set(PREXDR_CLASSES) <= {f"{label}_resistance" for label in CROSS_RESISTANCE}
+
+
+def test_cross_resistance_classes_do_not_overlap():
+    # DRUG_FLAG holds one flag per drug, so a drug in two classes would keep
+    # whichever was defined later and lose the other without saying so.
+    from config import CROSS_RESISTANCE
+
+    members = list(CROSS_RESISTANCE.values())
+    assert len(set().union(*members)) == sum(map(len, members))
+
+
 def test_formulary_is_narrower_than_the_cross_resistance_class():
     # The gap looks like drift, and closing it would let the app offer a drug no
     # longer recommended. config states why; this stops the repair.
     import tb_ontology
-    from config import FLUOROQUINOLONES, GROUP_A_FLUOROQUINOLONES, INJECTABLES
+    from config import FLUOROQUINOLONES, INJECTABLES
 
     modeled = {d["name"] for d in tb_ontology.drugs}
-    assert GROUP_A_FLUOROQUINOLONES < FLUOROQUINOLONES
-    assert modeled & FLUOROQUINOLONES == GROUP_A_FLUOROQUINOLONES
+    assert modeled & FLUOROQUINOLONES == {"levofloxacin", "moxifloxacin"}
     assert not {"ciprofloxacin", "ofloxacin"} & modeled
 
-    # injectables carry no such split, so all three are modeled
-    assert INJECTABLES <= modeled
+    # injectables carry no such split, so every member drug is modeled. Both sets
+    # also carry their own class label, which names no drug and models nothing.
+    from config import CLASS_LABELS
+
+    assert INJECTABLES - CLASS_LABELS <= modeled
+    assert modeled & CLASS_LABELS == set()
 
 def test_class_label_never_reaches_the_exclusion_list():
     # A source row may name the class rather than a member. It must set the flag
@@ -1070,12 +1180,171 @@ def test_unknown_profile_scores_as_susceptible():
     assert (calculator.scores(base) == susceptible).all()
 
 
-def test_gene_symbols_reached_from_two_loci():
-    # mutation_id is built from the symbol, so these collapse to one node. Pinned
-    # so the set cannot grow without a decision.
+def test_one_locus_per_gene_symbol():
+    # mutation_id is built from the symbol, so a shared symbol would merge distinct
+    # variants onto one node.
     from collections import Counter
 
     from who_catalog import GENE_LOCUS
 
-    shared = {symbol for symbol, n in Counter(GENE_LOCUS.values()).items() if n > 1}
-    assert shared == {"ndh", "alr", "pepQ"}
+    assert not {symbol for symbol, n in Counter(GENE_LOCUS.values()).items() if n > 1}
+
+
+def test_locus_table_carries_no_identity_entries():
+    # normalize_gene passes unknown identifiers through, so a self-mapped locus is
+    # dead weight.
+    from who_catalog import GENE_LOCUS
+
+    assert not {k for k, v in GENE_LOCUS.items() if k == v}
+
+
+def test_unknown_gene_identifier_passes_through():
+    from who_catalog import WHOCatalog
+
+    assert WHOCatalog.normalize_gene("Rv9999") == "Rv9999"
+    assert WHOCatalog.normalize_gene("KATG") == "katG"
+
+def catalog_frame(rows):
+    """Graded catalog rows as the reader hands them to unique_mutations."""
+    import pandas as pd
+
+    return pd.DataFrame(rows, columns=["gene", "variant", "mutation", "drug",
+                                       "tier", "confidence"])
+
+
+def test_row_without_a_token_is_dropped():
+    # Neither column carries a token, so mutation_id would be null and the graph
+    # loader would MERGE on it.
+    import pandas as pd
+
+    from who_catalog import WHOCatalog
+
+    raw = pd.DataFrame({
+        "drug": ["isoniazid", "isoniazid"],
+        "gene": ["katG", "katG"],
+        "mutation": [None, "p.Ser315Thr"],
+        "variant": [None, None],
+        "tier": [1, 1],
+        "final grading": ["1) Assoc w R", "1) Assoc w R"],
+    })
+    graded = WHOCatalog.graded_rows(raw)
+
+    assert len(graded) == 1
+    ids = [m["mutation_id"] for m in WHOCatalog().unique_mutations(graded)]
+    assert ids == ["katG_p.Ser315Thr"]
+
+
+@pytest.mark.parametrize("order", (("moderate", "high"), ("high", "moderate")))
+def test_duplicate_grading_keeps_the_stronger_level(order):
+    # The surviving confidence becomes the level on the resistance edge, so it
+    # cannot depend on which row sits higher in the sheet.
+    from who_catalog import WHOCatalog
+
+    rows = [("rpoB", "rpoB_p.Ser450Leu", None, "rifampicin", 1, level)
+            for level in order]
+    unique = WHOCatalog().unique_mutations(catalog_frame(rows))
+
+    assert len(unique) == 1
+    assert unique[0]["confidence"] == "high"
+
+
+TREATMENT_CASES = (
+    ([("rifampin", "rpoB"), ("isoniazid", "katG")], "TS002"),
+    ([("rifampin", "rpoB"), ("isoniazid", "katG"), ("levofloxacin", "gyrA")], "TS008"),
+    ([("rifampin", "rpoB"), ("isoniazid", "katG"), ("levofloxacin", "gyrA"),
+      ("amikacin", "rrs")], "TS003"),
+)
+
+
+@pytest.mark.parametrize("pairs,rule_id", TREATMENT_CASES)
+@pytest.mark.parametrize("mode,goal", (("forward", None), ("backward", "treatment")))
+def test_treatment_rule_reaches_the_audit_trail(pairs, rule_id, mode, goal):
+    # Backward chaining used to record classification rules alone, so the rule
+    # that produced the regimen was missing from the trail that justifies it.
+    muts = [mutation(drug, gene) for drug, gene in pairs]
+
+    assert rule_id in evaluate(muts, mode=mode, goal=goal)["rules_fired"]
+
+
+def test_inclusion_rule_reaches_the_audit_trail():
+    muts = [mutation("rifampin", "rpoB"), mutation("isoniazid", "katG"),
+            mutation("levofloxacin", "gyrA"), mutation("amikacin", "rrs")]
+
+    for mode, goal in (("forward", None), ("backward", "treatment")):
+        fired = evaluate(muts, mode=mode, goal=goal)["rules_fired"]
+        assert {"TS004", "TS005"} <= set(fired), mode
+
+
+def test_no_rule_is_logged_twice():
+    muts = [mutation("rifampin", "rpoB"), mutation("isoniazid", "katG"),
+            mutation("levofloxacin", "gyrA"), mutation("amikacin", "rrs")]
+
+    for mode, goal in (("forward", None), ("backward", "treatment")):
+        fired = evaluate(muts, mode=mode, goal=goal)["rules_fired"]
+        assert len(fired) == len(set(fired)), mode
+
+
+def gene_catalog(genes):
+    """A reader holding gene identifiers alone, which unmapped_genes reads."""
+    import pandas as pd
+
+    from who_catalog import WHOCatalog
+
+    catalog = WHOCatalog()
+    catalog.data = pd.DataFrame({"gene": genes})
+    return catalog
+
+
+def test_unresolved_locus_is_reported():
+    report = gene_catalog(["Rv9999", "Rv9999", "MTB000099"]).unmapped_genes()
+
+    assert report == {"Rv9999": 2, "MTB000099": 1}
+
+
+def test_gene_symbol_is_not_reported_as_a_gap():
+    # atpE carries no table entry and needs none, since normalize_gene passes the
+    # symbol through and the graph merges on that name.
+    assert gene_catalog(["atpE", "katG", "ahpC"]).unmapped_genes() == {}
+
+
+def test_intentional_passthrough_locus_is_not_reported():
+    # These loci carry no accepted symbol and the seed graph names them by locus,
+    # so they would otherwise sit in the report on every run with no action to take.
+    assert gene_catalog(["Rv2477c"] * 127).unmapped_genes() == {}
+
+
+def test_efflux_loci_resolve_to_their_own_symbols():
+    # Rv0678 is mmpR5, the repressor. Rv0676c is mmpL5, the pump it represses.
+    # They were crossed, which put two loci under one symbol and split the real
+    # gene across the seed name and the catalog name.
+    import tb_ontology
+    from who_catalog import WHOCatalog
+
+    assert WHOCatalog.normalize_gene("Rv0678") == "mmpR5"
+    assert WHOCatalog.normalize_gene("Rv0676c") == "mmpL5"
+    assert WHOCatalog.normalize_gene("Rv0450c") == "mmpL4"
+    assert gene_catalog(["Rv0678", "Rv0676c"]).unmapped_genes() == {}
+
+    seed = {g["name"]: g["locus"] for g in tb_ontology.genes}
+    assert seed["mmpR5"] == "Rv0678"
+
+
+def test_label_tiers_match_the_engine_classification():
+    # The label in feature_engineering and the rules in rule_engine state the
+    # tier definitions separately. Nothing else holds them together, so a change
+    # to one would score the engine against a scheme it no longer implements.
+    import itertools
+
+    from feature_engineering import profile
+
+    pool = ("rifampin", "isoniazid", "ethambutol", "levofloxacin",
+            "moxifloxacin", "amikacin", "kanamycin", "capreomycin")
+    tiers = {"MDR", "PreXDR", "XDR"}
+
+    for size in range(len(pool) + 1):
+        for combination in itertools.combinations(pool, size):
+            muts = [mutation(drug, "g", mid=f"{drug}_m") for drug in combination]
+            classified = classify(muts)
+            label = profile(set(combination))
+            expected = [label] if label in tiers else []
+            assert classified == expected, combination

@@ -1,6 +1,7 @@
 import os
 
 from neo4j import GraphDatabase, Query
+
 from who_catalog import WHOCatalog
 
 # SEED DATA
@@ -19,7 +20,7 @@ genes = [
     {'name': 'rpoC', 'locus': 'Rv0668', 'function': 'RNA polymerase beta-prime subunit', 'drug_target': None},
     {'name': 'rrs', 'locus': 'MTB000019', 'function': '16S ribosomal RNA', 'drug_target': 'aminoglycosides'},
     {'name': 'eis', 'locus': 'Rv2416c', 'function': 'Enhanced intracellular survival', 'drug_target': 'kanamycin'},
-    {'name': 'Rv0678', 'locus': 'Rv0678', 'function': 'MmpR5 transcriptional regulator', 'drug_target': 'bedaquiline'},
+    {'name': 'mmpR5', 'locus': 'Rv0678', 'function': 'MmpR5 transcriptional regulator', 'drug_target': 'bedaquiline'},
     {'name': 'rplC', 'locus': 'Rv0701', 'function': '50S ribosomal protein L3', 'drug_target': 'linezolid'},
 ]
 
@@ -71,7 +72,7 @@ mutations = [
     {'id': 'rrs_n.1402C>T', 'gene': 'rrs', 'position': 1402, 'ref': 'C', 'alt': 'T', 'drug': 'amikacin', 'level': 'high'},
     {'id': 'eis_c.-10G>A', 'gene': 'eis', 'position': -10, 'ref': 'G', 'alt': 'A', 'drug': 'kanamycin', 'level': 'moderate'},
     {'id': 'rpoC_p.Val483Gly', 'gene': 'rpoC', 'position': 483, 'ref': 'V', 'alt': 'G', 'drug': 'rifampin', 'level': 'low', 'effect': 'compensatory'},
-    {'id': 'Rv0678_c.137_138insG', 'gene': 'Rv0678', 'position': 137, 'ref': '-', 'alt': 'G', 'drug': 'bedaquiline', 'level': 'high'},
+    {'id': 'mmpR5_c.137_138insG', 'gene': 'mmpR5', 'position': 137, 'ref': '-', 'alt': 'G', 'drug': 'bedaquiline', 'level': 'high'},
     {'id': 'rplC_p.Cys154Arg', 'gene': 'rplC', 'position': 154, 'ref': 'C', 'alt': 'R', 'drug': 'linezolid', 'level': 'high'},
 ]
 
@@ -250,8 +251,6 @@ transmissions = [
 ]
 
 
-# ONTOLOGY
-
 # Node keys that get a lookup index and a uniqueness constraint. Held as data so
 # the DDL can be rendered for either the Memgraph or the Neo4j dialect.
 KEY_SPECS = (
@@ -260,6 +259,7 @@ KEY_SPECS = (
     ('Strain', 'strain_id'),
     ('Mutation', 'mutation_id'),
     ('Patient', 'patient_id'),
+    ('Case', 'case_id'),
 )
 
 
@@ -336,7 +336,6 @@ class TBOntology:
         self.transmission_edges()
 
     def gene_nodes(self):
-        """Gene nodes"""
         self.batch("""
             UNWIND $rows AS row
             MERGE (g:Gene {name: row.name})
@@ -344,7 +343,6 @@ class TBOntology:
         """, genes)
 
     def drug_nodes(self):
-        """Drug nodes"""
         self.batch("""
             UNWIND $rows AS row
             MERGE (d:Drug {name: row.name})
@@ -352,7 +350,6 @@ class TBOntology:
         """, drugs)
 
     def profile_nodes(self):
-        """Resistance profile nodes"""
         self.batch("""
             UNWIND $rows AS row
             MERGE (r:ResistanceProfile {type: row.type})
@@ -390,7 +387,6 @@ class TBOntology:
         """, compensating)
 
     def strain_nodes(self):
-        """Strain nodes"""
         self.batch("""
             UNWIND $rows AS row
             MERGE (s:Strain {strain_id: row.id})
@@ -398,7 +394,6 @@ class TBOntology:
         """, strains)
 
     def patient_nodes(self):
-        """Patient nodes and their infections"""
         self.batch("""
             UNWIND $rows AS row
             MERGE (p:Patient {patient_id: row.id})
@@ -413,7 +408,6 @@ class TBOntology:
         """, patient_infections)
 
     def strain_relationships(self):
-        """Relationships between strains, mutations, and profiles"""
         pairs = [{'strain': r['strain'], 'mutation': m}
                  for r in strain_data for m in r['mutations']]
         strain_profiles = [{'strain': r['strain'], 'profile': r['profile']}
@@ -430,7 +424,6 @@ class TBOntology:
         """, strain_profiles)
 
     def transmission_edges(self):
-        """Transmission relationships between strains"""
         self.batch("""
             UNWIND $rows AS row
             MATCH (s1:Strain {strain_id: row.source}), (s2:Strain {strain_id: row.target})
@@ -438,7 +431,6 @@ class TBOntology:
         """, transmissions)
 
     def query(self, cypher_query, parameters=None):
-        """Execute any Cypher query and return results"""
         with self.driver.session() as session:
             q = Query(cypher_query, timeout=30.0)
             result = session.run(q, parameters or {})
@@ -494,7 +486,6 @@ class TBOntology:
         return total
 
     def count_nodes(self):
-        """Count of all nodes by type"""
         query = """
             MATCH (n)
             RETURN labels(n)[0] as type, count(n) as count
@@ -503,7 +494,6 @@ class TBOntology:
         return self.read_query(query)
 
     def strain_mutations_detailed(self, strain_id):
-        """Detailed mutation info for a strain"""
         query = """
             MATCH (s:Strain {strain_id: $strain_id})-[:HAS_MUTATION]->(m:Mutation)
             OPTIONAL MATCH (m)-[:IN_GENE]->(g:Gene)
@@ -516,7 +506,6 @@ class TBOntology:
         return self.read_query(query, {'strain_id': strain_id})
 
     def patient_strain_mapping(self, patient_id):
-        """Map patient to their strain and profile"""
         query = """
             MATCH (p:Patient {patient_id: $patient_id})-[:INFECTED_WITH]->(s:Strain)
             OPTIONAL MATCH (s)-[:HAS_PROFILE]->(r:ResistanceProfile)
@@ -525,24 +514,25 @@ class TBOntology:
         """
         return self.read_query(query, {'patient_id': patient_id})
 
+    def rebuild(self):
+        """Clear, apply the schema, load the seed graph, then merge the WHO
+        catalog. Validation and the module entry point share this one path."""
+        self.clear_database()
+        self.schema()
+        self.ontology_classes()
+        try:
+            self.who_mutations()
+            self.count_who_mutations()
+        except Exception as exc:
+            print(f"WHO catalog skipped ({exc})")
+
     def close(self):
-        """Close database connection"""
         self.driver.close()
 
 
 def main():
-    """Rebuild the graph from the seed data, then merge the WHO catalog."""
     ontology = TBOntology()
-    ontology.clear_database()
-    ontology.schema()
-    ontology.ontology_classes()
-
-    try:
-        ontology.who_mutations()
-        ontology.count_who_mutations()
-    except Exception as e:
-        print(f"WHO data step skipped: {str(e)}")
-
+    ontology.rebuild()
     print("Database initialized successfully")
     ontology.close()
 

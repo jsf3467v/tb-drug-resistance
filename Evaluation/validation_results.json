@@ -1,11 +1,13 @@
 {
-  "timestamp": "2026-07-27T13:28:41.593205",
+  "timestamp": "2026-07-28T11:42:15.852149",
   "expert_system": {
     "model": "claude-sonnet-4-6",
     "method": "execution match of generated Cypher against a gold query",
     "overall": {
       "rate": 0.909,
-      "n": 11
+      "n": 11,
+      "ci_lower": 0.623,
+      "ci_upper": 0.984
     },
     "by_category": {
       "lookup": {
@@ -45,13 +47,14 @@
         "n": 2
       }
     },
+    "errored": [],
     "failures": [
       {
         "id": 2,
         "category": "lookup",
         "passed": false,
         "result_count": 0,
-        "time_ms": 2193.8,
+        "time_ms": 2164.0,
         "failure": "{code: Memgraph.ClientError.MemgraphError.MemgraphError} {message: Unbound variable: r.}",
         "cypher": "MATCH (s:Strain {strain_id: 'TB001'})-[:HAS_MUTATION]->(m:Mutation)-[:CONFERS_RESISTANCE]->(d:Drug)\nRETURN d.name as drug, d.class as drug_class, collect(DISTINCT m.mutation_id) as mutations, collect(DISTINCT r.level) as resistance_levels\nORDER BY drug_class, drug"
       }
@@ -87,189 +90,189 @@
         "accuracy": 0.983,
         "n": 120
       },
+      "PolyResistant": {
+        "accuracy": 0.45,
+        "n": 60
+      },
       "MDR": {
         "accuracy": 0.35,
         "n": 180
-      },
-      "XDR": {
-        "accuracy": 0.317,
-        "n": 60
       },
       "PreXDR": {
         "accuracy": 0.562,
         "n": 80
       },
-      "PolyResistant": {
-        "accuracy": 0.45,
+      "XDR": {
+        "accuracy": 0.317,
         "n": 60
       }
     },
     "abstentions": 6,
     "baseline": {
       "outcome": 0.746,
-      "regimen": 0.785
+      "regimen": 0.793
     },
     "ceiling": 0.798,
     "calibration": {
-      "ece": 0.0912,
-      "brier": 0.1985,
+      "ece": 0.0942,
+      "brier": 0.1951,
       "brier_constant": 0.1895,
       "auc": 0.5622,
-      "ece_temperature_scaled": 0.1851,
-      "ece_platt_scaled": 0.0159,
-      "brier_platt_scaled": 0.1907,
-      "temperature_mean": 4.709,
+      "ece_temperature_scaled": 0.103,
+      "ece_platt_scaled": 0.018,
+      "brier_platt_scaled": 0.1891,
+      "temperature_mean": 1.113,
       "temperature_per_fold": [
-        6.078,
-        3.452,
-        5.428,
-        4.98,
-        3.605
+        1.238,
+        1.05,
+        1.156,
+        1.057,
+        1.062
       ],
       "platt_per_fold": [
         [
-          0.012,
-          1.0
+          0.252,
+          0.786
         ],
         [
-          0.059,
-          0.943
+          0.517,
+          0.576
         ],
         [
-          0.015,
-          1.042
+          0.253,
+          0.839
         ],
         [
-          0.009,
-          1.1
+          0.336,
+          0.809
         ],
         [
-          0.046,
-          1.032
+          0.358,
+          0.792
         ]
       ],
-      "platt_note": "the fitted slope is near zero, so the scaled score is close to a constant at the base rate. The low scaled ECE reflects that rather than the score becoming informative, which the outcome arm matching its baseline also shows",
+      "platt_note": "the slope shrinks the score toward the base rate, so most of the lower scaled ECE is shrinkage rather than signal. Ranking is unchanged, so auc is the figure to read",
       "reliability": [
         {
           "bin": "0.0-0.1",
           "confidence": 0.05,
-          "accuracy": 0.0,
+          "accuracy": null,
           "count": 0
         },
         {
           "bin": "0.1-0.2",
-          "confidence": 0.1,
+          "confidence": 0.167,
           "accuracy": 1.0,
           "count": 1
         },
         {
           "bin": "0.2-0.3",
-          "confidence": 0.2,
+          "confidence": 0.25,
           "accuracy": 0.5,
           "count": 8
         },
         {
           "bin": "0.3-0.4",
-          "confidence": 0.3,
+          "confidence": 0.333,
           "accuracy": 0.111,
           "count": 9
         },
         {
           "bin": "0.4-0.5",
-          "confidence": 0.4,
+          "confidence": 0.417,
           "accuracy": 0.625,
           "count": 16
         },
         {
           "bin": "0.5-0.6",
-          "confidence": 0.5,
-          "accuracy": 0.701,
-          "count": 67
+          "confidence": 0.559,
+          "accuracy": 0.692,
+          "count": 227
         },
         {
           "bin": "0.6-0.7",
-          "confidence": 0.6,
-          "accuracy": 0.688,
-          "count": 160
-        },
-        {
-          "bin": "0.7-0.8",
-          "confidence": 0.7,
+          "confidence": 0.667,
           "accuracy": 0.755,
           "count": 192
         },
         {
-          "bin": "0.8-0.9",
-          "confidence": 0.8,
+          "bin": "0.7-0.8",
+          "confidence": 0.75,
           "accuracy": 0.8,
           "count": 275
         },
         {
+          "bin": "0.8-0.9",
+          "confidence": 0.833,
+          "accuracy": 0.764,
+          "count": 195
+        },
+        {
           "bin": "0.9-1.0",
-          "confidence": 0.928,
-          "accuracy": 0.765,
-          "count": 272
+          "confidence": 0.917,
+          "accuracy": 0.766,
+          "count": 77
         }
       ],
       "reliability_platt": [
         {
           "bin": "0.0-0.1",
           "confidence": 0.05,
-          "accuracy": 0.0,
+          "accuracy": null,
           "count": 0
         },
         {
           "bin": "0.1-0.2",
           "confidence": 0.15,
-          "accuracy": 0.0,
+          "accuracy": null,
           "count": 0
         },
         {
           "bin": "0.2-0.3",
           "confidence": 0.25,
-          "accuracy": 0.0,
+          "accuracy": null,
           "count": 0
         },
         {
           "bin": "0.3-0.4",
           "confidence": 0.35,
-          "accuracy": 0.0,
+          "accuracy": null,
           "count": 0
         },
         {
           "bin": "0.4-0.5",
           "confidence": 0.45,
-          "accuracy": 0.0,
+          "accuracy": null,
           "count": 0
         },
         {
           "bin": "0.5-0.6",
-          "confidence": 0.55,
-          "accuracy": 0.0,
-          "count": 0
+          "confidence": 0.567,
+          "accuracy": 0.6,
+          "count": 10
         },
         {
           "bin": "0.6-0.7",
-          "confidence": 0.65,
-          "accuracy": 0.0,
-          "count": 0
+          "confidence": 0.672,
+          "accuracy": 0.69,
+          "count": 129
         },
         {
           "bin": "0.7-0.8",
-          "confidence": 0.743,
-          "accuracy": 0.751,
-          "count": 962
+          "confidence": 0.749,
+          "accuracy": 0.758,
+          "count": 751
         },
         {
           "bin": "0.8-0.9",
-          "confidence": 0.847,
-          "accuracy": 0.632,
-          "count": 38
+          "confidence": 0.825,
+          "accuracy": 0.745,
+          "count": 110
         },
         {
           "bin": "0.9-1.0",
           "confidence": 0.95,
-          "accuracy": 0.0,
+          "accuracy": null,
           "count": 0
         }
       ]
@@ -277,7 +280,7 @@
   },
   "methodology": {
     "confidence_intervals": "95% bootstrap (n=1000) over the pooled out-of-fold cases. fold_std is the spread of the per-fold rates and is reported separately, not as the interval",
-    "calibration": "ECE of the predicted success probability against the actual outcome, raw probability reported. Per-fold leak-free temperature scaling was tested and rejected because it raised ECE.",
+    "calibration": "ECE of the predicted success probability against the outcome. The probability is Laplace-smoothed so the logit both scalings fit stays finite, and each scaling is fit per fold on the other folds.",
     "baseline": "outcome=always-predict-success, regimen=most-frequent-regimen-per-profile, fit per training fold and scored on the held-out fold",
     "regimen_mode": "diagnostic predictor, the most frequent regimen among retrieved neighbors, ignoring outcome, to separate objective mismatch from weak retrieval",
     "cbr": "5-fold stratified cross-validation"
@@ -296,28 +299,32 @@
             "specificity": 0.753809279233008,
             "precision": 0.9107442120290484,
             "f1": 0.9132762090499803,
-            "n": 48065
+            "n": 48065,
+            "evaluated": 65588
           },
           "MDR": {
             "sensitivity": 0.619351717464925,
             "specificity": 0.9629522378875355,
             "precision": 0.7576941287878788,
             "f1": 0.6815737635095566,
-            "n": 10335
+            "n": 10335,
+            "evaluated": 65588
           },
           "PreXDR": {
             "sensitivity": 0.6146031746031746,
             "specificity": 0.9489509225637908,
             "precision": 0.4831142904674763,
             "f1": 0.5409836065573771,
-            "n": 4725
+            "n": 4725,
+            "evaluated": 65588
           },
           "XDR": {
             "sensitivity": 0.5473000406008932,
             "specificity": 0.9770613861386138,
             "precision": 0.4821173104434907,
             "f1": 0.5126449895417381,
-            "n": 2463
+            "n": 2463,
+            "evaluated": 65588
           }
         },
         "confusion": {
@@ -357,28 +364,32 @@
             "specificity": 0.7589453860640302,
             "precision": 0.9124432560164168,
             "f1": 0.9141296673173568,
-            "n": 48065
+            "n": 48065,
+            "evaluated": 65588
           },
           "MDR": {
             "sensitivity": 0.623996129656507,
             "specificity": 0.9628617450636164,
             "precision": 0.7586166333372545,
             "f1": 0.6847526014015715,
-            "n": 10335
+            "n": 10335,
+            "evaluated": 65588
           },
           "PreXDR": {
             "sensitivity": 0.6196825396825397,
             "specificity": 0.9490495046251417,
             "precision": 0.48565267871952233,
             "f1": 0.5445415659289568,
-            "n": 4725
+            "n": 4725,
+            "evaluated": 65588
           },
           "XDR": {
             "sensitivity": 0.5550142103126269,
             "specificity": 0.9770613861386138,
             "precision": 0.4856127886323268,
             "f1": 0.5179992421371732,
-            "n": 2463
+            "n": 2463,
+            "evaluated": 65588
           }
         },
         "confusion": {
@@ -409,7 +420,93 @@
         }
       }
     },
+    "second_line_covered": {
+      "isolates": 38674,
+      "share": 0.59,
+      "note": "untested drugs read as susceptible, so the full-cohort precision on pre-XDR and XDR carries coverage gaps as errors",
+      "scores": {
+        "rule_engine": {
+          "overall": 0.808,
+          "balanced": 0.689,
+          "macro_f1": 0.708,
+          "rates": {
+            "below-MDR": {
+              "sensitivity": 0.9266277309106641,
+              "specificity": 0.751012275853204,
+              "precision": 0.846835092713399,
+              "f1": 0.8849363741530326,
+              "n": 23115,
+              "evaluated": 38674
+            },
+            "MDR": {
+              "sensitivity": 0.6631727711694736,
+              "specificity": 0.96763078554153,
+              "precision": 0.8521489104116223,
+              "f1": 0.7458772104112855,
+              "n": 8491,
+              "evaluated": 38674
+            },
+            "PreXDR": {
+              "sensitivity": 0.6191096634093377,
+              "specificity": 0.9477530893187355,
+              "precision": 0.6156337724033686,
+              "f1": 0.6173668254655695,
+              "n": 4605,
+              "evaluated": 38674
+            },
+            "XDR": {
+              "sensitivity": 0.5473000406008932,
+              "specificity": 0.9780729612548673,
+              "precision": 0.6293183940242764,
+              "f1": 0.5854505971769816,
+              "n": 2463,
+              "evaluated": 38674
+            }
+          }
+        },
+        "who_catalog": {
+          "overall": 0.81,
+          "balanced": 0.694,
+          "macro_f1": 0.712,
+          "rates": {
+            "below-MDR": {
+              "sensitivity": 0.9266277309106641,
+              "specificity": 0.7564110804036249,
+              "precision": 0.8496568685786822,
+              "f1": 0.8864746295836438,
+              "n": 23115,
+              "evaluated": 38674
+            },
+            "MDR": {
+              "sensitivity": 0.6685902720527618,
+              "specificity": 0.9674982606102773,
+              "precision": 0.8526584559927907,
+              "f1": 0.7494884150769029,
+              "n": 8491,
+              "evaluated": 38674
+            },
+            "PreXDR": {
+              "sensitivity": 0.6241042345276873,
+              "specificity": 0.947987906894831,
+              "precision": 0.618596642272923,
+              "f1": 0.6213382337044644,
+              "n": 4605,
+              "evaluated": 38674
+            },
+            "XDR": {
+              "sensitivity": 0.5550142103126269,
+              "specificity": 0.9780729612548673,
+              "precision": 0.6325775104118464,
+              "f1": 0.5912629757785468,
+              "n": 2463,
+              "evaluated": 38674
+            }
+          }
+        }
+      }
+    },
     "agreement": {
+      "scheme": "match spans every isolate, mcnemar counts only resistant truth and only where the arms differ in correctness",
       "engine_catalog_match": 0.998,
       "engine_catalog_disagreements": 124,
       "resistant_isolates": 17523,

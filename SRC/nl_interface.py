@@ -5,6 +5,7 @@ import time
 
 import anthropic
 from anthropic import Anthropic
+
 from cbr_cases import DEFAULT_CASES
 from cbr_engine import DEFAULT_NEIGHBORS, CaseStore, CBREngine
 from config import DRUG_ALIASES, EXAMPLES, SCHEMA
@@ -26,15 +27,18 @@ WRITE_PATTERN = re.compile(r'\b(' + '|'.join(WRITE_KEYWORDS) + r')\b')
 READ_STARTS = ('MATCH', 'OPTIONAL MATCH', 'WITH', 'UNWIND')
 
 LIST_PHRASES = ('show all', 'list all', 'show mdr')
-TREATMENT_KEYWORDS = (
+TREATMENT_WORDS = (
     'recommend', 'treat', 'should', 'prescribe', 'therapy', 'regimen', 'monitor',
     'safe', 'contraindication', 'best', 'suggest', 'exclude', 'avoid', 'drug',
     'medication', 'receive')
-CLASSIFICATION_KEYWORDS = (
-    'classification', 'classify', 'profile', 'type', 'mdr', 'xdr', 'prexdr',
-    'resistant', 'resistance')
+# Only these name a classification on their own. The rest need an id in the
+# question, so they stay separate rather than folded into a superset.
 CLASSIFY_WORDS = ('classification', 'classify', 'profile', 'type')
-RISK_KEYWORDS = ('risk', 'likely', 'probability', 'chance', 'predict')
+RESISTANCE_WORDS = ('mdr', 'xdr', 'prexdr', 'resistant', 'resistance')
+RISK_WORDS = ('risk', 'likely', 'probability', 'chance', 'predict')
+
+STRAIN_ID = re.compile(r'TB\d{3}\b')
+PATIENT_ID = re.compile(r'P\d{3}\b')
 
 RETRYABLE = tuple(c for c in (
     getattr(anthropic, 'APIConnectionError', None),
@@ -76,12 +80,12 @@ RETURN_CLAUSE = re.compile(r'\breturn\b', re.IGNORECASE)
 
 
 def runnable_cypher(cypher):
-    """Remove a trailing ORDER BY that sorts on a raw variable when the final
-    RETURN aggregates. Memgraph keeps only the projected aliases in scope after
-    an aggregate, so a key like s.year is unbound and the query fails to run.
-    Only the last clause is read, because an aggregate consumed by an earlier
-    WITH leaves the RETURN unaffected and its ORDER BY legal. Order never
-    changes the result set, so dropping the clause is answer preserving."""
+    """Drop a trailing ORDER BY that sorts on a raw variable when the final RETURN
+    aggregates, since Memgraph keeps only projected aliases in scope there. Only
+    the last clause is read, because an aggregate consumed by an earlier WITH
+    leaves its ORDER BY legal. Dropping is answer preserving only without a LIMIT;
+    with one the order picks which rows survive, so the query is left to fail
+    loudly rather than quietly return a different set."""
     clauses = [m.start() for m in RETURN_CLAUSE.finditer(cypher)]
     if not clauses:
         return cypher
@@ -92,16 +96,12 @@ def runnable_cypher(cypher):
         return cypher
 
     cut = low.rfind('order by')
-    if cut < final or '.' not in cypher[cut:]:
+    if cut < final or '.' not in cypher[cut:] or 'limit' in low[cut:]:
         return cypher
-
-    limit = low.find('limit', cut)
-    tail = ' ' + cypher[limit:].strip() if limit != -1 else ''
-    return (cypher[:cut].rstrip() + tail).rstrip()
+    return cypher[:cut].rstrip()
 
 
 class NLInterface:
-    """NL interface for TB drug resistance knowledge graph"""
 
     def __init__(self, ontology, api_key=None):
         self.ontology = ontology
@@ -115,14 +115,14 @@ class NLInterface:
         self.cbr_engine = None
         self.cbr_cases = []
         self.last_question = ""
-        self._cache = {}
+        self.cache = {}
 
     def model_text(self, prompt, max_tokens, temperature):
         """Cached model call. Backoff runs between attempts only, since a sleep
         after the last one delays the failure without buying another try."""
         key = (prompt, max_tokens, temperature)
-        if key in self._cache:
-            return self._cache[key]
+        if key in self.cache:
+            return self.cache[key]
 
         last = None
         for attempt in range(MAX_RETRIES):
@@ -131,7 +131,7 @@ class NLInterface:
                     model=MODEL, max_tokens=max_tokens, temperature=temperature,
                     messages=[{"role": "user", "content": prompt}])
                 text = first_text(message).strip()
-                self._cache[key] = text
+                self.cache[key] = text
                 return text
             except RETRYABLE as exc:
                 last = exc
@@ -177,10 +177,10 @@ CYPHER QUERY:"""
         return cypher.strip()
 
     def validate_cypher(self, cypher):
-        """Every check reads the query with string literals removed. A write
-        keyword inside a literal is a value, not a clause, and reading the raw
-        text here while the delimiter checks read the stripped text let the two
-        halves of one guard disagree about what the query says."""
+        """The keyword and delimiter checks read the query with string literals
+        removed, so a write keyword or bracket inside a literal is a value rather
+        than a clause. The opening-clause check reads raw text, where no literal
+        can precede the first keyword."""
         bare = unquoted(cypher)
 
         match = WRITE_PATTERN.search(bare.upper())
@@ -205,26 +205,23 @@ CYPHER QUERY:"""
         return self.ontology.read_query(cypher, parameters)
 
     def needs_rules(self, question):
+        """Goal for the rule engine to prove, or False. A strain id defaults to
+        classification and a patient id to treatment; a keyword hit overrides that
+        default, not another keyword, so the order below is the whole precedence."""
         q = question.lower()
         if any(p in q for p in LIST_PHRASES):
             return False
 
-        has_id = bool(re.search(r'TB\d{3}\b', question) or re.search(r'P\d{3}\b', question))
-
-        if has_id and any(kw in q for kw in TREATMENT_KEYWORDS):
+        strain = bool(STRAIN_ID.search(question))
+        if not (strain or PATIENT_ID.search(question)):
+            return 'classification' if any(w in q for w in CLASSIFY_WORDS) else False
+        if any(w in q for w in TREATMENT_WORDS):
             return 'treatment'
-        if any(w in q for w in CLASSIFY_WORDS) or (has_id and any(kw in q for kw in CLASSIFICATION_KEYWORDS)):
+        if any(w in q for w in CLASSIFY_WORDS + RESISTANCE_WORDS + RISK_WORDS):
             return 'classification'
-        if has_id and any(kw in q for kw in RISK_KEYWORDS):
-            return 'classification'
-        if re.search(r'TB\d{3}\b', question):
-            return 'classification'
-        if re.search(r'P\d{3}\b', question):
-            return 'treatment'
-        return False
+        return 'classification' if strain else 'treatment'
 
     def strain_from_results(self, results):
-        """Extract strain ID from query results"""
         for result in results:
             for key in ['strain', 'strain_id']:
                 if key in result and result[key] and str(result[key]).startswith('TB'):
@@ -232,7 +229,6 @@ CYPHER QUERY:"""
         return None
 
     def strain_from_patient(self, patient_id):
-        """Get strain ID from patient ID"""
         query = """
             MATCH (p:Patient {patient_id: $pid})-[:INFECTED_WITH]->(s:Strain)
             RETURN s.strain_id as strain_id
@@ -241,19 +237,17 @@ CYPHER QUERY:"""
         return result[0]['strain_id'] if result else None
 
     def strain_from_question(self):
-        """Extract strain ID from question text"""
-        match = re.search(r'TB\d{3}\b', self.last_question)
+        match = STRAIN_ID.search(self.last_question)
         if match:
             return match.group()
 
-        match = re.search(r'P\d{3}\b', self.last_question)
+        match = PATIENT_ID.search(self.last_question)
         if match:
             return self.strain_from_patient(match.group())
 
         return None
 
     def strain_from_mutations(self, results):
-        """Infer strain ID from mutations in results"""
         mutations = []
         for r in results:
             for key in ['mutation', 'mutation_id', 'mutations']:
@@ -277,7 +271,6 @@ CYPHER QUERY:"""
         return result[0]['strain_id'] if result else None
 
     def identify_strain(self, results):
-        """Find strain ID using multiple strategies"""
         strain_id = self.strain_from_results(results)
         if strain_id:
             return strain_id
@@ -326,7 +319,6 @@ CYPHER QUERY:"""
         return len(self.cbr_cases)
 
     def patient_from_results(self, results):
-        """Extract patient ID from query results"""
         for result in results:
             if 'patient_id' in result and str(result['patient_id']).startswith('P'):
                 return result['patient_id']
@@ -335,12 +327,10 @@ CYPHER QUERY:"""
         return None
 
     def patient_from_question(self):
-        """Extract patient ID from question text"""
-        match = re.search(r'P\d{3}\b', self.last_question)
+        match = PATIENT_ID.search(self.last_question)
         return match.group() if match else None
 
     def patient_data_query(self, patient_id):
-        """Query patient data from database"""
         check_query = "MATCH (p:Patient {patient_id: $pid}) RETURN p.patient_id LIMIT 1"
         exists = self.ontology.query(check_query, {'pid': patient_id})
 
@@ -388,7 +378,6 @@ CYPHER QUERY:"""
         return analysis
 
     def rule_lines(self, classifications, exclusions, regimens, monitoring, alerts):
-        """Format rule engine recommendations"""
         output = []
         output += self.classification_lines(classifications)
         output += self.regimen_lines(regimens)
@@ -438,7 +427,6 @@ CYPHER QUERY:"""
         return lines
 
     def rule_context(self, rule_output):
-        """Build context section for rules"""
         if not rule_output:
             return ""
 
@@ -458,7 +446,6 @@ Rules Applied: {', '.join(rule_output['rules_fired'])}
 """
 
     def cbr_context(self, cbr_output):
-        """Build context section for CBR"""
         if not cbr_output:
             return ""
 

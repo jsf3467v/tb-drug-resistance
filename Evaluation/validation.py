@@ -36,6 +36,7 @@ from metrics import (
     class_rates,
     macro_f1,
     mcnemar,
+    wilson_interval,
 )
 
 SEED = 42
@@ -75,9 +76,6 @@ def expert_checkpoint_clear():
     EXPERT_CHECKPOINT.unlink(missing_ok=True)
 
 
-# STATISTICS
-
-
 def bootstrap_ci(values, n_samples=BOOTSTRAP_SAMPLES, confidence=0.95, rng=None):
     if not values:
         return 0.0, 0.0, 0.0
@@ -111,9 +109,6 @@ def accuracy_with_ci(all_results, key, rng=None):
     }
 
 
-# CALIBRATION
-
-
 def confidence_bins(predictions, n_bins=N_BINS):
     """Per-bin count, summed confidence, and summed hits."""
     conf = np.fromiter((c for c, _ in predictions), dtype=float, count=len(predictions))
@@ -138,15 +133,14 @@ def reliability_diagram(predictions, n_bins=N_BINS):
     safe = np.maximum(count, 1)
     filled = count > 0
     conf = np.where(filled, conf_sum / safe, edges + width / 2)
-    acc = np.where(filled, hit_sum / safe, 0.0)
+    acc = hit_sum / safe
 
+    # An empty bin carries no accuracy, so it reports null rather than a zero
+    # the curve would draw as a point.
     return [{'bin': f"{edges[i]:.1f}-{edges[i] + width:.1f}",
              'confidence': round(float(conf[i]), 3),
-             'accuracy': round(float(acc[i]), 3),
+             'accuracy': round(float(acc[i]), 3) if filled[i] else None,
              'count': int(count[i])} for i in range(n_bins)]
-
-
-# K-FOLD CBR VALIDATION
 
 
 def stratified_folds(cases, k=K_FOLDS, rng=None):
@@ -215,25 +209,25 @@ def fold_scores(train, test):
 
 
 def profile_accuracy(flat_results):
+    """Regimen accuracy per profile, least to most severe. Retrieval accuracy
+    falls with severity, which the arrival order of the folds hid."""
+    from config import SEVERITY
+
     by_profile = defaultdict(lambda: {'correct': 0, 'total': 0})
     for r in flat_results:
         by_profile[r['profile']]['total'] += 1
         by_profile[r['profile']]['correct'] += bool(r['regimen_correct'])
 
-    return {p: {'accuracy': round(s['correct'] / s['total'], 3), 'n': s['total']}
-            for p, s in by_profile.items()}
-
-
-def regimen_modes(cases):
-    """Most frequent regimen within each resistance profile."""
-    counts = defaultdict(Counter)
-    for case in cases:
-        counts[case['profile']][case['regimen']] += 1
-    return {profile: c.most_common(1)[0][0] for profile, c in counts.items()}
+    order = sorted(by_profile, key=lambda p: SEVERITY.index(p) if p in SEVERITY else len(SEVERITY))
+    return {p: {'accuracy': round(by_profile[p]['correct'] / by_profile[p]['total'], 3),
+                'n': by_profile[p]['total']} for p in order}
 
 
 def baseline_accuracy(train, test):
-    """Majority-class floor fit on train and scored on test."""
+    """Majority-class floor fit on train and scored on test. regimen_modes comes
+    from cbr_engine, so the floor and the layer it bounds share one definition."""
+    from cbr_engine import regimen_modes
+
     if not train or not test:
         return {'outcome': 0.0, 'regimen': 0.0}
     modes = regimen_modes(train)
@@ -278,11 +272,34 @@ def fold_calibrations(all_results):
     return temperatures, platts, tempered, platted
 
 
+def calibration_summary(all_results, predictions):
+    """Raw and rescaled calibration of the reported success probability. Both
+    scalings are fit per fold on the other folds, so no case is scored by a fit
+    that saw it."""
+    temperatures, platts, tempered, platted = fold_calibrations(all_results)
+    return {
+        'ece': expected_calibration_error(predictions),
+        'brier': brier(predictions),
+        'brier_constant': brier_constant(predictions),
+        'auc': auc(predictions),
+        'ece_temperature_scaled': expected_calibration_error(tempered),
+        'ece_platt_scaled': expected_calibration_error(platted),
+        'brier_platt_scaled': brier(platted),
+        'temperature_mean': round(float(np.mean(temperatures)), 3),
+        'temperature_per_fold': temperatures,
+        'platt_per_fold': platts,
+        'platt_note': 'the slope shrinks the score toward the base rate, so most of '
+                      'the lower scaled ECE is shrinkage rather than signal. Ranking '
+                      'is unchanged, so auc is the figure to read',
+        'reliability': reliability_diagram(predictions),
+        'reliability_platt': reliability_diagram(platted),
+    }
+
+
 def aggregate_cbr_folds(all_results, baselines, k, seed=SEED):
     flat = [r for fold in all_results for r in fold]
     rng = np.random.default_rng(seed)
     predictions = [(r['success_prob'], r['actual_success']) for r in flat]
-    temperatures, platts, tempered, platted = fold_calibrations(all_results)
 
     return {
         'k': k,
@@ -294,24 +311,7 @@ def aggregate_cbr_folds(all_results, baselines, k, seed=SEED):
         'abstentions': sum(r['abstained'] for r in flat),
         'baseline': baseline_means(baselines),
         'ceiling': regimen_ceiling(),
-        'calibration': {
-            'ece': expected_calibration_error(predictions),
-            'brier': brier(predictions),
-            'brier_constant': brier_constant(predictions),
-            'auc': auc(predictions),
-            'ece_temperature_scaled': expected_calibration_error(tempered),
-            'ece_platt_scaled': expected_calibration_error(platted),
-            'brier_platt_scaled': brier(platted),
-            'temperature_mean': round(float(np.mean(temperatures)), 3),
-            'temperature_per_fold': temperatures,
-            'platt_per_fold': platts,
-            'platt_note': 'the fitted slope is near zero, so the scaled score is '
-                          'close to a constant at the base rate. The low scaled ECE '
-                          'reflects that rather than the score becoming informative, '
-                          'which the outcome arm matching its baseline also shows',
-            'reliability': reliability_diagram(predictions),
-            'reliability_platt': reliability_diagram(platted),
-        },
+        'calibration': calibration_summary(all_results, predictions),
     }
 
 
@@ -374,10 +374,6 @@ EXPERT_QUERIES = [
     {'id': 11, 'category': 'unanswerable',
      'question': 'What is the home address of patient P001?', 'unanswerable': True},
 ]
-
-
-def expert_queries():
-    return EXPERT_QUERIES
 
 
 def row_values(row):
@@ -454,9 +450,9 @@ def evaluate_query(item, nl_interface):
     if refused:
         return query_result(item, False, 0, start, 'rejected a valid question', {'cypher': cypher})
 
+    expected = nl_interface.execute_query(item['gold'])
     try:
         produced = nl_interface.execute_query(cypher)
-        expected = nl_interface.execute_query(item['gold'])
     except Exception as exc:
         return query_result(item, False, 0, start, str(exc), {'cypher': cypher})
 
@@ -477,14 +473,22 @@ def category_rates(results):
 
 
 def expert_accuracy(results, model):
-    total = len(results)
-    hits = sum(r['passed'] for r in results)
+    """Pass rate with a Wilson interval, since eleven queries do not support the
+    precision three decimals imply. Queries that errored on the key or the
+    connection are unscored, matching what the journal keeps, so an infrastructure
+    failure does not read as a wrong answer."""
+    scored = [r for r in results if not r.get('errored')]
+    total = len(scored)
+    hits = sum(r['passed'] for r in scored)
+    lower, upper = wilson_interval(hits, total)
     return {
         'model': model,
         'method': 'execution match of generated Cypher against a gold query',
-        'overall': {'rate': round(hits / total, 3) if total else 0.0, 'n': total},
-        'by_category': category_rates(results),
-        'failures': [r for r in results if not r['passed']],
+        'overall': {'rate': round(hits / total, 3) if total else 0.0, 'n': total,
+                    'ci_lower': lower, 'ci_upper': upper},
+        'by_category': category_rates(scored),
+        'errored': [r['id'] for r in results if r.get('errored')],
+        'failures': [r for r in scored if not r['passed']],
     }
 
 
@@ -521,9 +525,9 @@ METHODOLOGY = {
     'confidence_intervals': f'95% bootstrap (n={BOOTSTRAP_SAMPLES}) over the pooled '
                             f'out-of-fold cases. fold_std is the spread of the per-fold '
                             f'rates and is reported separately, not as the interval',
-    'calibration': 'ECE of the predicted success probability against the actual outcome, '
-                   'raw probability reported. Per-fold leak-free temperature scaling was '
-                   'tested and rejected because it raised ECE.',
+    'calibration': 'ECE of the predicted success probability against the outcome. The '
+                   'probability is Laplace-smoothed so the logit both scalings fit stays '
+                   'finite, and each scaling is fit per fold on the other folds.',
     'baseline': 'outcome=always-predict-success, regimen=most-frequent-regimen-per-profile, '
                 'fit per training fold and scored on the held-out fold',
     'regimen_mode': 'diagnostic predictor, the most frequent regimen among retrieved '
@@ -569,7 +573,8 @@ def print_expert_summary(expert):
 
     rows("Expert system, natural language to Cypher", {
         'model': expert['model'],
-        'accuracy': f"{overall['rate']:.1%} (n={overall['n']}, execution match)",
+        'accuracy': f"{overall['rate']:.1%} [{overall['ci_lower']:.1%}, "
+                    f"{overall['ci_upper']:.1%}] (n={overall['n']}, execution match)",
         **{name: f"{c['rate']:.1%} (n={c['n']})" for name, c in missed.items()},
         **({'other': f"{clean} categories at 100.0%"} if clean else {}),
     })
@@ -584,7 +589,7 @@ def print_cbr_summary(cbr):
         'outcome': interval(cbr['outcome_accuracy']),
         'ECE': f"{cal['ece']:.4f} raw, {cal['ece_platt_scaled']:.4f} platt scaled, "
                f"{cal['ece_temperature_scaled']:.4f} temperature scaled "
-               f"(rejected, T={cal['temperature_mean']})",
+               f"(no gain, T={cal['temperature_mean']})",
         'Brier': f"{cal['brier']:.4f} raw, {cal['brier_platt_scaled']:.4f} platt scaled, "
                  f"{cal['brier_constant']:.4f} constant at base rate",
         'AUC': f"{cal['auc']:.3f} raw probability",
@@ -647,6 +652,8 @@ def agreement(truth, engine, catalog):
     catalog_only = int((resistant & engine_ok & ~catalog_ok).sum())
 
     return {
+        'scheme': 'match spans every isolate, mcnemar counts only resistant truth and '
+                  'only where the arms differ in correctness',
         'engine_catalog_match': round(float((engine == catalog).mean()), 3),
         'engine_catalog_disagreements': int((engine != catalog).sum()),
         'resistant_isolates': int(resistant.sum()),
@@ -712,9 +719,24 @@ class ClassificationValidation:
             'eval_isolates': len(self.labeled),
             'scheme': 'below-MDR / MDR / PreXDR / XDR; no genotypic call counts as below-MDR',
             'scores': scores,
+            'second_line_covered': self.covered_scores(preds),
             'agreement': agreement(self.truth, preds['rule_engine'], preds['who_catalog']),
             'engine_only_cases': diagnose(engine_eval, self.truth,
                                           preds['rule_engine'], preds['who_catalog']),
+        }
+
+    def covered_scores(self, preds):
+        """Tiers rescored on isolates measured for a fluoroquinolone and an
+        injectable. The label reads an untested drug as susceptible, so elsewhere
+        a coverage gap scores as a false positive."""
+        covered = self.labeled['second_line_tested'].to_numpy(dtype=bool)
+        return {
+            'isolates': int(covered.sum()),
+            'share': round(float(covered.mean()), 3),
+            'note': 'untested drugs read as susceptible, so the full-cohort precision '
+                    'on pre-XDR and XDR carries coverage gaps as errors',
+            'scores': {name: tier_accuracy(self.truth[covered], p[covered])
+                       for name, p in preds.items()},
         }
 
 
@@ -758,11 +780,22 @@ def print_class_agreement(agree):
          })
 
 
+def print_covered_scores(covered):
+    """Tier scores where an untested drug cannot count against a genotypic call."""
+    rows(f"second-line tested only, {covered['isolates']:,} isolates "
+         f"({covered['share']:.1%})", {
+             name: (f"overall {s['overall']:.1%}, balanced {s['balanced']:.1%}, "
+                    f"macro-F1 {s['macro_f1']:.3f}")
+             for name, s in covered['scores'].items()
+         })
+
+
 def print_classification(summary):
     print(f"\nCRyPTIC classification validation, {summary['eval_isolates']:,} labeled isolates")
     print_class_scores(summary['scores'])
     print_class_confusion(summary['scores']['rule_engine'])
     print_class_agreement(summary['agreement'])
+    print_covered_scores(summary['second_line_covered'])
 
 
 def graph_ontology():
@@ -770,16 +803,7 @@ def graph_ontology():
 
     print("\nRebuilding knowledge graph, the existing contents are cleared")
     ontology = TBOntology()
-    ontology.clear_database()
-    ontology.schema()
-    ontology.ontology_classes()
-
-    try:
-        ontology.who_mutations()
-        ontology.count_who_mutations()
-    except Exception as exc:
-        print(f"  WHO catalog skipped ({exc})")
-
+    ontology.rebuild()
     return ontology
 
 
@@ -818,7 +842,7 @@ def main():
         print(f"\nClassification validation skipped ({exc})")
 
     data = report_file(expert, cbr, cryptic)
-    if expert and cbr:
+    if 'expert_system' in data and 'cbr' in data:
         print_summary(data)
     print(f"\nSaved {RESULTS.name} in {RESULTS.parent.name}")
 
