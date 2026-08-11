@@ -1,27 +1,16 @@
 {
   "eval_isolates": 65588,
-  "drugs": [
-    "amikacin",
-    "bedaquiline",
-    "capreomycin",
-    "clofazimine",
-    "delamanid",
-    "ethambutol",
-    "ethionamide",
-    "isoniazid",
-    "kanamycin",
-    "levofloxacin",
-    "linezolid",
-    "moxifloxacin",
-    "pyrazinamide",
-    "rifampin",
-    "streptomycin"
-  ],
   "macro_f1": {
     "rule_engine": 0.588,
     "who_catalog": 0.611
   },
-  "scheme": "truth is measured DST, with disagreeing replicates resolved to R. Both predictions derive from EFFECTS, so the engine calls are the catalog calls plus class cross-resistance, the two columns are not independent, and the paired tests across the three injectables share driving mutations rather than being three separate confirmations. Drugs are the DST and catalog columns intersected, so a drug the catalog never grades is left out of both arms rather than scored at zero sensitivity in each",
+  "scheme": {
+    "truth_table": "DST_MEASUREMENTS",
+    "prediction_table": "EFFECTS",
+    "replicates": "max",
+    "drug_selection": "intersection",
+    "engine_extends_catalog": true
+  },
   "paired": {
     "amikacin": {
       "chi2": 1280.58,
