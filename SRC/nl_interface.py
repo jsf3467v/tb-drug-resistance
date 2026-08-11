@@ -16,14 +16,12 @@ REQUEST_TIMEOUT = 30.0
 MAX_RETRIES = 4
 BACKOFF_BASE = 0.5
 
-# Creating clauses the read-only interface must reject. Matched on word boundaries
-# so identifiers that contain a keyword (created, asset, offset) are not
-# mistaken for the clause itself.
+# Write clauses the read-only interface rejects. Matched on word boundaries, so an
+# identifier containing a keyword is not mistaken for the clause.
 WRITE_KEYWORDS = ('DELETE', 'DETACH', 'DROP', 'CREATE', 'MERGE', 'SET', 'REMOVE')
 WRITE_PATTERN = re.compile(r'\b(' + '|'.join(WRITE_KEYWORDS) + r')\b')
 
-# Read clauses a generated query may open with. The write deny-list above is the
-# real guard, so this only rejects a query that opens with nothing recognizable.
+# Clauses a generated query may open with. The deny-list above is the real guard.
 READ_STARTS = ('MATCH', 'OPTIONAL MATCH', 'WITH', 'UNWIND')
 
 LIST_PHRASES = ('show all', 'list all', 'show mdr')
@@ -31,8 +29,7 @@ TREATMENT_WORDS = (
     'recommend', 'treat', 'should', 'prescribe', 'therapy', 'regimen', 'monitor',
     'safe', 'contraindication', 'best', 'suggest', 'exclude', 'avoid', 'drug',
     'medication', 'receive')
-# Only these name a classification on their own. The rest need an id in the
-# question, so they stay separate rather than folded into a superset.
+# Only these name a classification alone. The rest need an id in the question.
 CLASSIFY_WORDS = ('classification', 'classify', 'profile', 'type')
 RESISTANCE_WORDS = ('mdr', 'xdr', 'prexdr', 'resistant', 'resistance')
 RISK_WORDS = ('risk', 'likely', 'probability', 'chance', 'predict')
@@ -49,8 +46,8 @@ RETRYABLE = tuple(c for c in (
 
 
 class LLMUnavailable(RuntimeError):
-    """Raised when the model cannot be reached after retries, so callers can
-    treat an infrastructure failure distinctly from a model that declined."""
+    """Raised when the model cannot be reached, so an infrastructure failure reads
+    differently from a model that declined."""
 
 
 def first_text(message):
@@ -70,8 +67,8 @@ def canonical_drugs(cypher):
 
 
 def unquoted(cypher):
-    """Query with single and double quoted spans removed, so a delimiter inside a
-    string literal does not count toward the parenthesis and bracket balance."""
+    """Query with quoted spans removed, so a delimiter inside a literal does not
+    count toward the bracket balance."""
     return re.sub(r"'[^']*'|\"[^\"]*\"", "", cypher)
 
 
@@ -80,12 +77,10 @@ RETURN_CLAUSE = re.compile(r'\breturn\b', re.IGNORECASE)
 
 
 def runnable_cypher(cypher):
-    """Drop a trailing ORDER BY that sorts on a raw variable when the final RETURN
-    aggregates, since Memgraph keeps only projected aliases in scope there. Only
-    the last clause is read, because an aggregate consumed by an earlier WITH
-    leaves its ORDER BY legal. Dropping is answer preserving only without a LIMIT;
-    with one the order picks which rows survive, so the query is left to fail
-    loudly rather than quietly return a different set."""
+    """Drop a trailing ORDER BY on a raw variable when the final RETURN aggregates,
+    since only projected aliases stay in scope there. An aggregate consumed by an
+    earlier WITH leaves its ORDER BY legal, so only the last clause is read. With a
+    LIMIT the order picks which rows survive, so the query is left to fail."""
     clauses = [m.start() for m in RETURN_CLAUSE.finditer(cypher)]
     if not clauses:
         return cypher
@@ -118,8 +113,7 @@ class NLInterface:
         self.cache = {}
 
     def model_text(self, prompt, max_tokens, temperature):
-        """Cached model call. Backoff runs between attempts only, since a sleep
-        after the last one delays the failure without buying another try."""
+        """Cached model call. Backoff runs between attempts only."""
         key = (prompt, max_tokens, temperature)
         if key in self.cache:
             return self.cache[key]
@@ -177,10 +171,9 @@ CYPHER QUERY:"""
         return cypher.strip()
 
     def validate_cypher(self, cypher):
-        """The keyword and delimiter checks read the query with string literals
-        removed, so a write keyword or bracket inside a literal is a value rather
-        than a clause. The opening-clause check reads raw text, where no literal
-        can precede the first keyword."""
+        """Keyword and delimiter checks read the query with literals removed, so a
+        keyword inside a literal is a value. The opening-clause check reads raw
+        text, where no literal can precede the first keyword."""
         bare = unquoted(cypher)
 
         match = WRITE_PATTERN.search(bare.upper())
@@ -199,15 +192,14 @@ CYPHER QUERY:"""
         return True, None
 
     def execute_query(self, cypher, parameters=None):
-        """Read-only execution of a generated query. Driver errors propagate as
-        they are, since the caller already labels them and re-raising a bare
-        Exception here only hid the type behind a second copy of the message."""
+        """Read-only execution. Driver errors propagate as they are, since the caller
+        already labels them."""
         return self.ontology.read_query(cypher, parameters)
 
     def needs_rules(self, question):
         """Goal for the rule engine to prove, or False. A strain id defaults to
-        classification and a patient id to treatment; a keyword hit overrides that
-        default, not another keyword, so the order below is the whole precedence."""
+        classification and a patient id to treatment, and a keyword hit overrides
+        the default rather than another keyword."""
         q = question.lower()
         if any(p in q for p in LIST_PHRASES):
             return False
@@ -221,7 +213,7 @@ CYPHER QUERY:"""
             return 'classification'
         return 'classification' if strain else 'treatment'
 
-    def strain_from_results(self, results):
+    def strain_in_results(self, results):
         for result in results:
             for key in ['strain', 'strain_id']:
                 if key in result and result[key] and str(result[key]).startswith('TB'):
@@ -271,7 +263,7 @@ CYPHER QUERY:"""
         return result[0]['strain_id'] if result else None
 
     def identify_strain(self, results):
-        strain_id = self.strain_from_results(results)
+        strain_id = self.strain_in_results(results)
         if strain_id:
             return strain_id
 
@@ -289,10 +281,8 @@ CYPHER QUERY:"""
         return self.strain_from_mutations(results)
 
     def rule_recommend(self, results, question_type=False):
-        """Rule engine output for the strain behind these results. needs_rules
-        returns the goal name, which is what backward chaining proves, so the
-        question type is passed through. Without one the engine derives
-        everything in a single forward pass."""
+        """Rule engine output for the strain behind these results. The question type
+        is the goal backward chaining proves; without one the engine runs forward."""
         if not results:
             return None
 
@@ -311,14 +301,14 @@ CYPHER QUERY:"""
             'rules_fired': result['rules_fired']
         }
 
-    def init_cbr(self):
+    def cbr_case_base(self):
         store = CaseStore(self.ontology)
         self.cbr_cases = store.retrieve_cases(limit=DEFAULT_CASES)
         if self.cbr_cases:
             self.cbr_engine = CBREngine(self.cbr_cases)
         return len(self.cbr_cases)
 
-    def patient_from_results(self, results):
+    def patient_in_results(self, results):
         for result in results:
             if 'patient_id' in result and str(result['patient_id']).startswith('P'):
                 return result['patient_id']
@@ -351,7 +341,7 @@ CYPHER QUERY:"""
         if not self.cbr_engine or not results:
             return None
 
-        patient_id = self.patient_from_results(results)
+        patient_id = self.patient_in_results(results)
         if not patient_id:
             patient_id = self.patient_from_question()
 
@@ -470,7 +460,7 @@ Top Recommendations: {top_regimens}
             return self.fallback_summary(results, rule_output, cbr_output)
 
     def answer_prompt(self, user_question, cypher, results, rule_output, cbr_output):
-        display_results = results[:20] if len(results) > 20 else results
+        shown = results[:20] if len(results) > 20 else results
         rule_text = self.rule_context(rule_output)
         cbr_text = self.cbr_context(cbr_output)
 
@@ -480,7 +470,7 @@ USER QUESTION: {user_question}
 
 QUERY EXECUTED: {cypher}
 
-RESULTS: {json.dumps(display_results, indent=2)}
+RESULTS: {json.dumps(shown, indent=2)}
 
 TOTAL RESULTS: {len(results)}
 {rule_text}

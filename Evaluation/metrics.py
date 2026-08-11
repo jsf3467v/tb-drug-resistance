@@ -12,23 +12,22 @@ from scipy.stats import chi2, norm, rankdata
 EVAL_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(EVAL_DIR.parent / "SRC"))
 
-from feature_engineering import DATA, drug_map, flat
+from feature_engineering import DATA, drug_map, flat, named_calls
 from rule_engine import RuleEngine
 
 RESULTS = EVAL_DIR / "per_drug_results.json"
+N_BINS = 10
 
 
 def safe_ratio(num, den):
-    """Ratio, or zero when nothing was counted. Deliberately unrounded, because
-    balanced accuracy and macro F1 average these and rounding here moved their
-    last reported digit on roughly one run in seven."""
+    """Ratio, or zero when nothing was counted. Unrounded, since the macro
+    averages are taken over these."""
     return num / den if den else 0.0
 
 
 def binary_rates(actual, predicted):
-    """Sensitivity, specificity, precision, and their harmonic mean from boolean
-    actual and predicted arrays. F1 travels with the pair it combines, so the
-    per-drug and per-tier arms report it from one definition rather than two."""
+    """Sensitivity, specificity, precision, and F1 from boolean arrays. One
+    definition, read by both the per-drug and per-tier arms."""
     actual = np.asarray(actual, dtype=bool)
     predicted = np.asarray(predicted, dtype=bool)
     tp = int((actual & predicted).sum())
@@ -63,8 +62,7 @@ def macro_f1(rates):
 
 
 def wilson_interval(hits, n, confidence=0.95):
-    """Score interval for a proportion, which holds where the normal
-    approximation would run past zero or one."""
+    """Wilson score interval, which stays inside zero and one at small n."""
     if not n:
         return 0.0, 0.0
     z = float(norm.ppf(0.5 + confidence / 2))
@@ -75,14 +73,47 @@ def wilson_interval(hits, n, confidence=0.95):
 
 
 def mcnemar(b, c):
-    """Continuity-corrected McNemar test for two paired classifiers. The
-    correction is floored at zero, since without it two classifiers that
-    disagree equally often return a positive statistic instead of none."""
+    """Continuity-corrected McNemar for paired classifiers. The correction is
+    floored at zero, so equal disagreement returns no statistic."""
     n = b + c
     if not n:
         return {'chi2': 0.0, 'p_value': 1.0, 'discordant': 0}
     stat = max(0.0, abs(b - c) - 1.0) ** 2 / n
     return {'chi2': round(stat, 2), 'p_value': float(chi2.sf(stat, 1)), 'discordant': n}
+
+
+def confidence_bins(predictions, n_bins=N_BINS):
+    """Per-bin count, summed confidence, and summed hits."""
+    conf = np.fromiter((c for c, _ in predictions), dtype=float, count=len(predictions))
+    hit = np.fromiter((bool(y) for _, y in predictions), dtype=float, count=len(predictions))
+    idx = np.minimum((conf * n_bins).astype(int), n_bins - 1)
+    return (np.bincount(idx, minlength=n_bins),
+            np.bincount(idx, weights=conf, minlength=n_bins),
+            np.bincount(idx, weights=hit, minlength=n_bins))
+
+
+def expected_calibration_error(predictions, n_bins=N_BINS):
+    """Count-weighted gap between confidence and accuracy across the bins."""
+    if not predictions:
+        return 0.0
+    count, conf_sum, hit_sum = confidence_bins(predictions, n_bins)
+    return round(float(np.abs(hit_sum - conf_sum).sum() / count.sum()), 4)
+
+
+def reliability_diagram(predictions, n_bins=N_BINS):
+    """Per-bin confidence and accuracy. An empty bin reports null, not zero."""
+    count, conf_sum, hit_sum = confidence_bins(predictions, n_bins)
+    width = 1.0 / n_bins
+    edges = np.arange(n_bins) * width
+    safe = np.maximum(count, 1)
+    filled = count > 0
+    conf = np.where(filled, conf_sum / safe, edges + width / 2)
+    acc = hit_sum / safe
+
+    return [{'bin': f"{edges[i]:.1f}-{edges[i] + width:.1f}",
+             'confidence': round(float(conf[i]), 3),
+             'accuracy': round(float(acc[i]), 3) if filled[i] else None,
+             'count': int(count[i])} for i in range(n_bins)]
 
 
 def prediction_arrays(predictions):
@@ -102,8 +133,8 @@ def brier(predictions):
 
 
 def brier_constant(predictions):
-    """Brier score of a constant prediction at the observed base rate, which is
-    p(1-p). The floor a probability has to beat to carry any information."""
+    """Brier score of a constant prediction at the base rate, p(1-p). The floor
+    a probability must beat to carry information."""
     if not predictions:
         return 0.0
     _, labels = prediction_arrays(predictions)
@@ -112,8 +143,8 @@ def brier_constant(predictions):
 
 
 def auc(predictions):
-    """Area under the ROC curve, by rank sum so ties are handled. Zero when
-    either class is absent, since ranking is undefined against nothing."""
+    """Area under the ROC curve by rank sum, so ties average. Zero when either
+    class is absent."""
     if not predictions:
         return 0.0
     probs, labels = prediction_arrays(predictions)
@@ -127,23 +158,17 @@ def auc(predictions):
 
 
 def dst_truth(drugs):
-    """Per-isolate measured R/S call per drug, NaN where the drug was not tested.
-    Replicates aggregate by max, so an isolate called both R and S for one drug
-    counts as R."""
-    df = flat(pd.read_parquet(DATA / "DST_MEASUREMENTS.parquet",
-                              columns=["UNIQUEID", "DRUG", "PHENOTYPE"]), "UNIQUEID")
-    df = df[df["PHENOTYPE"].astype(str).isin(["R", "S"])].copy()
-    df["drug"] = df["DRUG"].astype(str).map(drugs)
-    df = df.dropna(subset=["drug"])
-    df["call"] = (df["PHENOTYPE"].astype(str) == "R").astype(float)
-    return df.pivot_table(index="UNIQUEID", columns="drug", values="call", aggfunc="max")
+    """Measured R/S call per isolate and drug, NaN where untested. Replicates
+    aggregate by max, and the rows are the ones the tier label reads."""
+    _, calls = named_calls(DATA / "DST_MEASUREMENTS.parquet", "PHENOTYPE", drugs)
+    return calls.assign(call=calls["resistant"].astype(float)).groupby(
+        ["UNIQUEID", "drug"], observed=True)["call"].max().unstack()
 
 
 def catalog_calls(graded):
-    """Per-isolate genotypic resistance call per drug, from rows already graded
-    and held by the evaluator, so EFFECTS is read once for both arms."""
-    return graded[["UNIQUEID", "drug"]].assign(call=1.0).pivot_table(
-        index="UNIQUEID", columns="drug", values="call", aggfunc="max")
+    """Genotypic call per isolate and drug, from rows the evaluator already holds."""
+    return graded[["UNIQUEID", "drug"]].assign(call=1.0).groupby(
+        ["UNIQUEID", "drug"], observed=True)["call"].max().unstack()
 
 
 class IsolateOntology:
@@ -153,8 +178,7 @@ class IsolateOntology:
         self.mutations = mutations
 
     def patient_strain_mapping(self, strain_id):
-        """The engine reads an id beginning with P as a patient. These are
-        isolates, so the id maps to itself and the branch changes nothing."""
+        """Isolate ids never begin with P, so the id maps to itself."""
         return [{'strain': strain_id}]
 
     def strain_mutations_detailed(self, strain_id):
@@ -176,8 +200,7 @@ class RuleEngineEvaluator:
         return pd.Series(calls).reindex(isolates).fillna('below-MDR')
 
     def graded(self):
-        """Resistance-graded rows from EFFECTS, read once. Both the tier arm and
-        the per-isolate diagnosis ask for these, and the file is large."""
+        """Resistance-graded rows from EFFECTS, read once and held."""
         if self.resistant is None:
             eff = flat(pd.read_parquet(self.effects_path,
                        columns=['UNIQUEID', 'GENE', 'MUTATION', 'DRUG', 'PREDICTION']),
@@ -190,9 +213,8 @@ class RuleEngineEvaluator:
         return self.resistant
 
     def mutations(self, isolates):
-        """Per-isolate mutation records. Grouping with a DataFrame per isolate
-        rebuilt one frame per group, which dominated the run at CRyPTIC scale,
-        so the rows are bucketed in a single pass over the columns instead."""
+        """Per-isolate mutation records. Bucketed in one pass rather than grouped,
+        since a frame per isolate dominated the run at this scale."""
         rows = self.graded()
         rows = rows[rows['UNIQUEID'].isin(isolates)]
         by_isolate = {}
@@ -232,8 +254,7 @@ def calls_frame(call_sets, drugs):
 
 
 def aligned_calls(call, truth, drugs):
-    """Boolean call table on the truth index. An isolate the arm never saw
-    carries no resistance call, which reads as susceptible."""
+    """Boolean call table on the truth index. An unseen isolate reads susceptible."""
     return call.reindex(index=truth.index, columns=drugs).fillna(0.0) == 1.0
 
 
@@ -248,8 +269,8 @@ def drug_scores(truth, call, drugs):
 
 
 def paired_scores(truth, first, second, drugs):
-    """McNemar over the isolates tested for each drug. The two arms read the same
-    rows, so the per-drug gap needs a paired test rather than two intervals."""
+    """McNemar per drug over the isolates tested for it. The arms read the same
+    rows, so the gap needs a paired test."""
     scores = {}
     for drug in drugs:
         measured = truth[drug].notna()
@@ -261,10 +282,14 @@ def paired_scores(truth, first, second, drugs):
     return scores
 
 
+def superset(engine, catalog):
+    """True when every catalog call is also an engine call. Measured, not asserted,
+    since it is what makes the arms dependent."""
+    return not (catalog & ~engine).to_numpy().any()
+
+
 def per_drug_scores():
-    """Per-drug sensitivity and specificity for the engine and catalog against DST.
-    DST is measured phenotype and independent of both. The two predictions are
-    not independent of each other, which the scheme note records."""
+    """Per-drug rates for the engine and catalog against measured DST."""
     drugs = drug_map(DATA / "DRUG_CODES.csv")
     dst = dst_truth(drugs)
     evaluator = RuleEngineEvaluator(DATA / "EFFECTS.parquet", drugs)
@@ -277,38 +302,35 @@ def per_drug_scores():
             "who_catalog": drug_scores(dst, catalog, targets)}
     return {
         "eval_isolates": int(dst.index.size),
-        "drugs": targets,
         "macro_f1": {name: macro_f1(scores) for name, scores in arms.items()},
-        "scheme": "truth is measured DST, with disagreeing replicates resolved to R. Both "
-                  "predictions derive from EFFECTS, so the engine calls are the catalog "
-                  "calls plus class cross-resistance, the two columns are not independent, "
-                  "and the paired tests across the three injectables share driving mutations "
-                  "rather than being three separate confirmations. Drugs are the DST and "
-                  "catalog columns intersected, so a drug the catalog never grades is left "
-                  "out of both arms rather than scored at zero sensitivity in each",
+        "scheme": {
+            "truth_table": "DST_MEASUREMENTS",
+            "prediction_table": "EFFECTS",
+            "replicates": "max",
+            "drug_selection": "intersection",
+            "engine_extends_catalog": superset(engine, catalog),
+        },
         "paired": paired_scores(dst, engine, catalog, targets),
         **arms,
     }
 
 
 def print_per_drug(summary):
-    # Each drug is scored on the isolates carrying its own DST result, so the
-    # denominator is reported per drug rather than taken from the header.
-    print(f"\nPer-Drug Classification ({summary['eval_isolates']:,} isolates with any DST)")
-    print(f"  {summary['scheme']}")
-    for name in ("rule_engine", "who_catalog"):
-        print(f"\n{name}  macro-F1 {summary['macro_f1'][name]:.3f}")
-        for drug in summary["drugs"]:
-            r = summary[name][drug]
-            print(f"  {drug:14s}: sens {r['sensitivity']:.1%}  spec {r['specificity']:.1%}  "
-                  f"ppv {r['precision']:.1%}  F1 {r['f1']:.3f}  "
-                  f"(R={r['n']:,} of {r['evaluated']:,})")
+    """One row per drug, engine rates beside the catalog F1 and the paired gap.
+    Each drug carries its own denominator, since it is scored on the isolates
+    tested for it."""
+    macro = summary["macro_f1"]
+    print(f"\nPer-drug, {summary['eval_isolates']:,} isolates with any DST"
+          f"   macro-F1  engine {macro['rule_engine']:.3f}  catalog {macro['who_catalog']:.3f}")
+    print(f"\n  {'drug':14s}{'R':>8s}{'tested':>9s}{'sens':>8s}{'spec':>7s}"
+          f"{'ppv':>7s}{'F1':>8s}{'catalog F1':>12s}{'discordant':>12s}")
 
-    print("\nengine vs catalog, McNemar over the drugs the two arms differ on")
-    for drug, m in summary["paired"].items():
-        if m["discordant"]:
-            print(f"  {drug:14s}: chi2 {m['chi2']:.2f}  p {m['p_value']:.2e}  "
-                  f"{m['discordant']:,} discordant")
+    for drug, r in summary["rule_engine"].items():
+        gap = summary["paired"][drug]["discordant"]
+        print(f"  {drug:14s}{r['n']:>8,}{r['evaluated']:>9,}{r['sensitivity']:>8.1%}"
+              f"{r['specificity']:>7.1%}{r['precision']:>7.1%}{r['f1']:>8.3f}"
+              f"{summary['who_catalog'][drug]['f1']:>12.3f}"
+              f"{(f'{gap:,}' if gap else '-'):>12s}")
 
 
 def main():

@@ -9,47 +9,39 @@ A hybrid decision-support prototype for *Mycobacterium tuberculosis* drug resist
 
 ## Objective
 
-This system was developed as a graduate course project and serves as a portfolio piece. Its goal is to show how several methods work together as one pipeline. The knowledge graph supplies evidence-based structure, and the rule engine produces transparent classifications and treatment decisions. Case-based reasoning addresses cases that the rules cannot settle, and a natural-language layer translates questions into graph queries. Drug-resistant tuberculosis was chosen because the domain supplies what each of these methods needs. WHO publishes a graded mutation catalog and written resistance definitions, so the knowledge graph and the rule engine encode published evidence rather than structure invented for the exercise. Treatment selection is guideline-driven but stays underdetermined once an isolate is resistant to part of the recommended regimen, which is the gap the case-based layer fills.
+This system was developed as a graduate course project and serves as a portfolio piece. Its goal is to show how several methods work together as one pipeline. The knowledge graph supplies evidence-based structure, the rule engine produces transparent classifications and treatment decisions, case-based reasoning addresses what the rules cannot settle, and a natural-language layer translates questions into graph queries.
 
-Healthcare was selected because of its inherent challenges rather than despite them. The field requires systems to handle conflicting labels, incomplete outcomes, and evidence that is graded by confidence rather than definitiveness. Such imperfections are rarely encountered in clean benchmarks. Developing solutions here involved confronting these conditions directly instead of avoiding them.
+Drug-resistant tuberculosis was chosen because the domain supplies what each of these methods needs. WHO publishes a graded mutation catalog and written resistance definitions, so the knowledge graph and the rule engine encode published evidence rather than structure invented for the exercise. Treatment selection is guideline-driven but stays underdetermined once an isolate resists part of the recommended regimen, which is the gap the case-based layer fills.
 
-Three constraints stem from this choice and apply to all the results below. The patient cases are synthetic because no open source links genotype, treatment, and outcome at the scale retrieval needs. The rule engine reaches only isolates carrying a graded mutation, which caps sensitivity short of 100%. The regimen layer is scored based on an exact match to a labeled regimen, penalizing it when it prioritizes optimizing treatment outcome instead. Each constraint is measured and shown next to the relevant figure, with Limitations offering a full explanation.
+Healthcare was selected for its difficulties rather than despite them. The field requires systems to handle conflicting labels, incomplete outcomes, and evidence graded by confidence rather than by certainty, conditions that clean benchmarks rarely present. Three constraints follow from that choice and shape every result below. The patient cases are synthetic, the rule engine reaches only isolates carrying a graded mutation, and the regimen layer is scored against a labeled regimen rather than against outcome. Each is measured and reported beside the figure it bounds, and Limitations gives the full account.
 
 ## Overview
 
-Drug-resistant tuberculosis requires reasoning that is both auditable and grounded in current evidence. This system combines an explicit symbolic layer with a case-based layer applied to synthetic patient cases. In the symbolic layer, each classification is linked to a specific named rule, and each mutation reference corresponds to an entry in the WHO catalog. The case-based layer provides the decision on the regimen when rules alone are insufficient. A natural-language interface converts user questions into graph queries, with a read-only restriction to ensure safety, while a Streamlit front end visualizes the reasoning process.
+Drug-resistant tuberculosis requires reasoning that is both auditable and grounded in current evidence. Each classification here is linked to a named rule and each mutation reference to a catalog entry. The case-based layer decides the regimen where rules alone are insufficient. A natural-language interface converts questions into graph queries under a read-only restriction, and a Streamlit front end shows the reasoning.
 
-An isolate is classified into four tiers. Below-MDR covers anything short of resistance to both first-line drugs; multidrug-resistant (MDR) signifies resistance to isoniazid and rifampin; pre-extensively drug-resistant (pre-XDR) includes resistance to one additional drug class; and extensively drug-resistant (XDR) denotes resistance to two additional classes.
-
-The synthetic patient layer and the sensitivity ceiling of 79.7% are considered actual measured limits rather than hidden thresholds. This ceiling is determined by isolates at MDR or higher that do not possess any graded mutation. A brief demo video showcasing the front end and its reasoning trace is currently in development.
+An isolate is classified into four tiers. Below-MDR covers anything short of resistance to both first-line drugs. Multidrug-resistant, abbreviated MDR, means resistance to isoniazid and rifampin. Pre-extensively drug-resistant, abbreviated pre-XDR, adds one further drug class, and extensively drug-resistant, abbreviated XDR, adds two.
 
 ## Interactive demo
 
-The system currently employs Streamlit for the front end. A clinical question drives the entire hybrid pipeline and returns an auditable recommendation with supporting reasoning.
+A clinical question drives the whole pipeline and returns an auditable recommendation.
 
 ![The app answering a treatment query for patient P003, showing the diagnosis, the XDR classification, and the contraindicated drugs beside the mutation or class rule that excludes each one](assets/query-results.png)
 
-A question such as "What treatment should patient P003 receive" is answered across four tabs.
-
-- Query Results carries the direct answer, the strain and its classification, the recommended regimen, and a table of contraindicated drugs tied to the mutations that rule them out.
-- Expert System exposes the rule-engine trace, the canonical gene fraction, the rules that fired, and the regimen with its drug exclusions.
-- Case-Based Reasoning retrieves the nearest matches from the 1,000 synthetic patient cases and reports a success rate and a confidence band.
-- Technical Details shows the Cypher that the natural-language layer generated from the question, so the path from text to graph query stays visible.
-
-The Expert System tab carries the symbolic trace. Strain TB011 classifies as XDR under rule RC002, which selects BPaL, and each excluded drug names the mutation that ruled it out. The tab applies five rules rather than six. A treatment question runs backward chaining, which reaches the XDR goal without visiting the pre-XDR rule.
+A question such as "What treatment should patient P003 receive" is answered across four tabs. Query Results carries the direct answer, the strain and its classification, the recommended regimen, and the contraindicated drugs tied to the mutations that rule them out. Expert System exposes the rule-engine trace. Case-Based Reasoning retrieves the nearest matches from the 1,000 synthetic cases and reports a success rate with a confidence band. Technical Details shows the generated Cypher, so the path from text to graph query stays visible.
 
 ![The Expert System tab for strain TB011, showing the XDR classification with its rule and source, the five rules applied, the BPaL regimen with its duration, and the bedaquiline and linezolid indications from rules TS004 and TS005](assets/expert-system.png)
 
-The Case-Based Reasoning tab answers the same question from prior similar cases rather than from rules. Ten neighbors match this patient and three of them succeeded. The tab reports 33.3% rather than the raw 30% because the share is Laplace-smoothed, which the Calibration section describes. The confidence band reads moderate rather than high because the neighbors disagree on outcome.
+Strain TB011 classifies as XDR under rule RC002, and rule TS003 then selects BPaL. Five rules apply rather than six, because a treatment question runs backward chaining, which proves the XDR goal without visiting the pre-XDR rule.
 
 ![The Case-Based Reasoning tab for patient P003, showing the XDR patient profile, ten similar cases, a 33.3 percent success rate, and moderate confidence of 0.58](assets/cbr.png)
+
+The Case-Based Reasoning tab answers the same question from prior cases rather than from rules. Ten neighbors match and three succeeded. The reported 33.3 percent rather than the raw 30 percent is Laplace smoothing, which Calibration describes. Confidence reads moderate because the neighbors disagree on outcome.
 
 ![The Technical Details tab showing the Cypher generated from the question, the confirmation that it ran, and the nine results it returned](assets/tech-details.png)
 
 ### Running the demo
 
-Full setup is in [DEPLOYME.md](DEPLOYME.md). The short version, once dependencies and the
-environment are in place, is three commands.
+Full setup is in [DEPLOYME.md](DEPLOYME.md). Once dependencies and the environment are in place, three commands suffice.
 
 ```bash
 docker run -d -p 7687:7687 -p 7444:7444 --name memgraph memgraph/memgraph-mage:3.9.0
@@ -57,32 +49,27 @@ python SRC/tb_ontology.py
 streamlit run SRC/app.py
 ```
 
-Paste an Anthropic API key into the sidebar, click Initialize CBR to load the 1,000
-synthetic cases, then ask a question such as "What treatment should patient P003 receive".
-The seed strains and patients load whether or not the large datasets are present, so the
-demo runs on the seed graph alone.
+Paste an Anthropic API key into the sidebar, click Initialize CBR to load the 1,000 synthetic cases, then ask a question. The seed strains and patients load whether or not the large datasets are present, so the demo runs on the seed graph alone.
 
 ## Architecture
 
 The design separates a durable, evidence-based platform from a swappable patient layer.
 
-- Knowledge graph. A Memgraph database contains 1,295 mutation nodes sourced from the WHO mutation catalog. This catalog rates 48,152 variant and drug pairs on a scale from 1 to 5, covering 30,699 unique variants. The graph loads only the 1,383 pairs graded 1 or 2 that are associated with resistance, since higher grades indicate uncertain or no association. These pairs consolidate into 1,291 distinct nodes because nodes are identified by mutation, so a variant linked to multiple drugs merges into a single node. The remaining four nodes are seed mutations the catalog does not grade, since 19 of the 23 seed mutations share an identifier with a catalog entry and merge into it. Memgraph speaks the Bolt protocol, so the code reaches it through the neo4j Python driver, and the neo4j dependency in requirements.txt is that driver rather than a separate database.
+- Knowledge graph. A Memgraph database holds 1,295 mutation nodes. The WHO catalog grades 48,152 variant and drug pairs on a scale from 1 to 5 across 30,699 unique variants, and the graph loads only the 1,383 pairs graded 1 or 2, since higher grades indicate uncertain or absent association. Those pairs consolidate into 1,291 nodes, because a node is keyed on the mutation and a variant linked to several drugs merges into one. The remaining four are seed mutations the catalog does not grade, the other 19 of the 23 seed mutations having merged into catalog entries. Memgraph speaks the Bolt protocol, so the neo4j dependency in `requirements.txt` is that driver rather than a second database.
 
-- Rule engine. A symbolic engine using forward and backward chaining classifies isolates as MDR, pre-XDR, or XDR. It also applies whole-class cross-resistance and chooses between the BPaL and BPaLM regimens. Backward chaining aims for a specific goal, answering either a treatment or classification question. When targeting a treatment goal, both modes agree on classifications, exclusions, alerts, regimens, inclusions, and monitoring entries across all resistance flag combinations tested. For a classification goal, agreement includes classifications, exclusions, and alerts; the regimen and downstream elements are withheld since no treatment is requested. The list of rules fired sits outside that guarantee, because forward chaining reaches the pre-XDR rule on an XDR isolate while backward chaining stops earlier. This list appears in the Expert System tab as the trace, reflecting the mode used.
+- Rule engine. A symbolic engine using forward and backward chaining classifies isolates as MDR, pre-XDR, or XDR, applies whole-class cross-resistance, and chooses between the BPaL and BPaLM regimens. The two modes agree on classifications, exclusions, and alerts across every resistance flag combination the suite tests, and on regimens, inclusions, and monitoring whenever a treatment question is asked. A classification question stops at the tier, so everything downstream is withheld rather than computed. Only the list of rules fired can differ, since forward chaining reaches the pre-XDR rule on an XDR isolate while backward chaining stops earlier.
 
-- Case-based reasoning. Retrieval over 1,000 synthetic patient cases that returns a regimen, a success rate, and a confidence band from the nearest neighbors. The model uses seven hand-set similarity weights rather than learned ones.
+- Case-based reasoning. Retrieval over 1,000 synthetic patient cases returning a regimen, a success rate, and a confidence band from the nearest neighbors, using seven hand-set similarity weights rather than learned ones.
 
-- Natural-language interface. An Anthropic large language model layer converts plain English into Cypher queries. It is protected by a read-only guard. The query executes in a read transaction that Memgraph rejects if any write is attempted, making the database the primary barrier. Additionally, a keyword pre-filter prevents obvious write attempts before the query executes.
+- Natural-language interface. An Anthropic model converts plain English into Cypher. The query runs in a read transaction that Memgraph rejects on any write, which makes the database the primary barrier, and a keyword pre-filter catches obvious write attempts before execution.
 
-The figure below follows a single strain through the graph, from its mutations to the genes and drugs they impact, and finally to its resistance profile. The rule engine retrieves mutation-to-drug associations directly from this structure without traversing it. Therefore, the figure illustrates the source of its data rather than a specific path taken.
+The figure below follows one strain from its mutations to the genes and drugs they affect and on to its resistance profile. The rule engine reads mutation-to-drug associations from this structure directly rather than traversing it, so the figure shows the source of its facts rather than a path taken.
 
 ![Strain TB011 traced through the knowledge graph, from its four mutations to the genes and drugs they affect and on to its XDR resistance profile](assets/knowledge_graph.png)
 
 ## Results
 
-Every figure below is reproduced by the commands in [DEPLOYME.md](DEPLOYME.md) section 6 and
-written to `Evaluation/validation_results.json`. Full scoring for each arm, with the
-per-tier and per-drug breakdowns, sits in [EVALUATION.md](EVALUATION.md).
+Every figure below is written to `Evaluation/validation_results.json` by the commands in [DEPLOYME.md](DEPLOYME.md) section 6. Full per-tier and per-drug scoring sits in [EVALUATION.md](EVALUATION.md).
 
 | Arm | Measure | Score | Floor | Ceiling |
 | --- | --- | ---: | ---: | ---: |
@@ -92,35 +79,29 @@ per-tier and per-drug breakdowns, sits in [EVALUATION.md](EVALUATION.md).
 | Outcome probability | area under the curve | 0.562 | 0.500 | 0.668 |
 | Query translation | execution match | 90.9% | | |
 
-Two of those rows carry a measured ceiling rather than a perfect one, and the pair is the
-most useful thing in the table. The regimen ceiling of 79.8% sits half a point above the
-score and above the majority baseline, so that layer is bounded by the synthetic cohort.
-The outcome ceiling of 0.668 sits far above the score, so that layer is bounded by the
-neighborhood weighting instead. The same calculation separates them, and
-[EVALUATION.md](EVALUATION.md) sets out both.
+Two rows carry a measured ceiling rather than a perfect one, and the pair is the most useful thing in the table. The regimen ceiling of 79.8 percent sits half a point above the majority baseline and 2.6 points above the score, so that layer is bounded by the synthetic cohort. The outcome ceiling of 0.668 sits far above its score, so that layer is bounded by the neighborhood weighting instead. One calculation separates them, and [EVALUATION.md](EVALUATION.md) sets out both.
 
-Three limits shape every number above. Sensitivity is capped at 79.7% because 3,562 of the
-17,523 isolates measured at MDR or higher carry no mutation the catalog grades. Precision
-on the top two tiers is held down because only 59.0% of the cohort was tested for both a
-fluoroquinolone and an injectable, and the label reads an untested drug as susceptible.
-The regimen layer is scored by exact match to a labeled regimen, which penalizes it for
-optimizing treatment outcome instead. Limitations gives the full account.
+Three limits shape every number above.
+
+Sensitivity is capped at 79.7 percent, because 3,562 of the 17,523 isolates measured at MDR or higher never reach a rule. Of those, 3,182 carry no genotype at all and only 380 were sequenced and carry nothing the catalog grades. On the 53,735 isolates the release does sequence, the ceiling rises to 97.3 percent and balanced accuracy from 67.4 to 78.8 percent, reported under `sensitivity_ceiling` and `genotype_covered`. The spread across tiers has the same cause, since one pooled collection sequenced its XDR isolates far less completely than its MDR ones.
+
+Precision on the top two tiers is held down because only 59.0 percent of the cohort was tested for both a fluoroquinolone and an injectable, and the label reads an untested drug as susceptible.
+
+The regimen layer is scored by exact match to a labeled regimen, which penalizes it for optimizing treatment outcome instead.
 
 ![Grouped bar chart of per-tier sensitivity against measured phenotype, rule engine versus WHO catalog, across below-MDR, MDR, pre-XDR, and XDR. The two systems are within a point of each other on every tier, and sensitivity declines from 92% on below-MDR to 55% on XDR as the tiers grow rarer.](assets/cryptic_tier_sensitivity.png)
 
 ## Data
 
-The platform is built on the [WHO mutation catalog, second edition](https://www.who.int/publications/i/item/9789240082410), supplied as the file WHO-UCN-TB-2023.7-eng.xlsx. Real-world validation uses [CRyPTIC release 3.4.0](https://doi.org/10.5281/zenodo.15680920), which pairs whole-genome variants graded against that catalog with laboratory resistance phenotypes. This release includes 53,897 samples with both sequencing and phenotype data, plus 11,945 samples with only phenotype data. The validation set consists of 65,588 samples with measured drug results, scored in their entirety rather than on a held-out subset.
+The platform is built on the [WHO mutation catalog, second edition](https://www.who.int/publications/i/item/9789240082410). Real-world validation uses [CRyPTIC release 3.4.0](https://doi.org/10.5281/zenodo.15680920), which pairs whole-genome variants graded against that catalog with laboratory resistance phenotypes. Download instructions are in [DEPLOYME.md](DEPLOYME.md) section 4.
 
-The release carries two phenotype sources. Drug susceptibility testing, abbreviated DST, is the reference method run in clinical laboratories. The UKMYC plate is a broth microdilution assay read across a fixed drug panel. The two agree on 94.8% of the 21,568 isolates measured by both, which sets a label-noise floor beneath every accuracy figure reported above. They disagree on 1,117 isolates, and on all 1,117 the UKMYC profile is the less severe of the two, never the more severe. The exploratory analysis separates how much of that follows from the narrower UKMYC panel.
+The validation set is the 65,588 samples carrying a usable drug-susceptibility result, scored in full rather than on a held-out subset. Of those, 53,735 also carry a genotype and 11,853 do not. The second group matters, because an isolate with no genotype reaches no rule and scores below-MDR for want of input, which is why Results reports both readings.
 
-The catalog does not classify every call as resistant or susceptible. Some results are uncertain or failed, and both arms count these as not resistant, aligning with the approach where isolates without genotypic calls are considered below-MDR. The exposure is worth naming, since 31,517 isolates have at least one uncertain call, and 2,927 have one on rifampin or isoniazid, the two key drugs for defining MDR. If uncertain calls were categorized as resistant, all the figures in both arms would change.
+The release carries two phenotype sources. Drug susceptibility testing, abbreviated DST, is the reference method run in clinical laboratories, and the UKMYC plate is a broth microdilution assay read across a fixed drug panel. The two agree on 94.8 percent of the 21,568 isolates measured by both, which sets a label-noise floor beneath every accuracy figure above. They disagree on 1,117 isolates, and on all 1,117 the UKMYC profile is the less severe of the two, never the more severe. The exploratory analysis separates how much of that follows from the narrower UKMYC panel.
 
-The synthetic patient cases are transparent and deterministic under a fixed seed.
+The catalog does not classify every call as resistant or susceptible. Some are uncertain and some failed, and both arms count these as not resistant, matching the treatment of isolates with no genotypic call. The exposure is worth naming. Across the release, 31,517 isolates carry at least one uncertain call and 4,957 at least one failed call, giving 33,782 with either. On rifampin and isoniazid, the two drugs that define MDR, the counts are 2,927 uncertain, 712 failed, and 3,630 with either. Reading uncertain calls as resistant would move every figure in both arms.
 
-The actual datasets are not included in this repository due to their large size. To reproduce the results, download them into a `Datasets/` folder located at the project root. The catalog file WHO-UCN-TB-2023.7-eng.xlsx is from WHO. The CRyPTIC tables, including EFFECTS.parquet, PREDICTIONS.parquet, DST_MEASUREMENTS.parquet, UKMYC_PHENOTYPES.parquet, and the file DRUG_CODES.csv, originate from CRyPTIC release 3.4.0 on Zenodo. The synthetic patient cases are generated through code and do not require downloading. Accessing the CRyPTIC parquet tables requires the pyarrow engine, which is installed via `requirements.txt`.
-
-The release also ships `DATA_SCHEMA.pdf`, which documents the full set of tables, and `MUTATIONS.parquet`, which this project retains but does not read. The exploratory analysis explains why the rule engine sources its genotypes from EFFECTS instead. A seventh file, `Datasets/cryptic_features.parquet`, is built on first use and cached. It rebuilds itself whenever a source table, `feature_engineering.py`, or `config.py` is newer than the cache, so replacing a table is enough.
+The synthetic patient cases are generated in code and are deterministic under a fixed seed.
 
 ## Evaluation
 
@@ -129,86 +110,50 @@ Scoring runs through two entry points, both detailed in [DEPLOYME.md](DEPLOYME.m
 ```bash
 python Evaluation/validation.py   # tier, expert-system, and case-based arms
 python Evaluation/metrics.py      # per-drug scoring
-pytest tests/test_core.py         # 127 tests, no database, API, or datasets
+pytest tests/test_core.py         # 125 tests, no database, API, or datasets
 ```
 
-Every metric comes from `Evaluation/metrics.py`, so the tier arm and the per-drug arm
-measure the same quantities. The reference arm differs between them. The tier arm reads
-the catalog profile from `PREDICTIONS.parquet` and the per-drug arm reads it from
-`EFFECTS.parquet`, so both of its columns come from one table. Compare within an arm
-rather than across the two files.
+Every scoring primitive comes from `Evaluation/metrics.py`, so the tier arm and the per-drug arm measure the same quantities. The reference arm differs between them. The tier arm reads the catalog profile from `PREDICTIONS.parquet` and the per-drug arm reads it from `EFFECTS.parquet`, so both of its columns come from one table. Compare within an arm rather than across the two files.
 
-The CRyPTIC, per-drug, and case-based arms are deterministic under a fixed seed of 42, and
-repeated runs reproduce every digit in the two result files apart from the last decimal
-place of one p-value, which moves with floating-point summation order. The expert-system
-arm calls a live model and is the one figure expected to change, so it is reported beside
-the model that generated it. Four runs returned ten of eleven three times and eleven of
-eleven once.
+The CRyPTIC, per-drug, and case-based arms are deterministic under a fixed seed of 42, and repeated runs reproduce every digit in the two result files, apart from the last decimal place of one p-value on some hardware, which moves with floating-point summation order. The expert-system arm calls a live model and is the one figure expected to change, so it is reported beside the model that generated it. Six runs returned ten of eleven four times and eleven of eleven twice.
 
-The project builds up in three levels. The test suite needs only
-`pip install -r requirements-dev.txt`. Adding Docker and an Anthropic API key activates the
-demo and the expert-system arm on the seed graph, with no datasets downloaded. Adding the
-`Datasets/` folder unlocks the CRyPTIC and per-drug arms.
+The project builds up in three levels. The test suite needs only `pip install -r requirements-dev.txt`. Adding Docker and an Anthropic API key activates the demo and the expert-system arm on the seed graph, with no datasets downloaded. Adding the `Datasets/` folder unlocks the CRyPTIC and per-drug arms.
 
 ### Exploratory analysis
 
-[EDA/EDA.ipynb](EDA/EDA.ipynb) documents the data work behind the design, including the label-noise floor, the baselines the case-based layer must beat, the coverage gap between the PREDICTIONS and EFFECTS tables, and the seed graph's composition. It shares `baseline_accuracy` with `validation.py`, so the baselines shown there and the ones the system is scored against are the same function rather than two similar ones.
+[EDA/EDA.ipynb](EDA/EDA.ipynb) documents the data work behind the design, including the label-noise floor, the baselines the case-based layer must beat, the coverage gap between the PREDICTIONS and EFFECTS tables, and the seed graph composition. It shares `baseline_accuracy` with `validation.py`, so the baselines shown there and the ones the system is scored against are one function rather than two similar ones.
 
 ## Limitations
 
-- The patient layer is synthetic because no open dataset links genotype, regimen, and outcome at the scale a case-based recommender needs. This data scarcity is a well-known challenge in healthcare machine learning, and it is the direct reason the rare resistant classes evaluate poorly.
+- The patient layer is synthetic because no open dataset links genotype, regimen, and outcome at the scale a case-based recommender needs. This scarcity is a known difficulty in healthcare machine learning, and it is the direct reason the rare resistant classes evaluate poorly.
 
+- The case-based similarity weights are domain-informed priors set by hand rather than values learned from data, and tuning them is future work. The region and outcome tables in the case generator follow the same pattern, carrying real structure from the WHO regions while their magnitudes stay synthetic.
 
-- The case-based similarity weights are domain-informed priors set by hand, not values learned from data, and tuning them is future work. The region and outcome tables in the case generator follow the same pattern, since they carry real structure from the WHO regions while their magnitudes stay synthetic rather than transcribed from any WHO release.
+- The regimen layer is scored by exact match to the labeled regimen, which penalizes it for optimizing treatment outcome instead, so part of the measured shortfall is a metric mismatch rather than a modeling error. CRyPTIC supplies genotype and phenotype but no treatment outcomes, so it validates classification only and cannot validate this layer at all.
 
+- Classification follows the pre-2021 definitions rather than the current standard, and that one choice explains three things that would otherwise look like separate faults. XDR and pre-XDR are anchored to injectable resistance rather than to the Group A drugs. MDR is anchored to isoniazid and rifampin together, where the current definition also admits rifampin resistance alone. An injectable-resistant isolate is therefore labeled pre-XDR while still being routed to BPaLM by the WHO 2022 regimen rules, a pairing the current definition would not produce. The choice is deliberate. The release does carry bedaquiline and linezolid phenotypes, but on few isolates and at genotypic sensitivity of 0.40 and 0.23, the weakest of the four drugs the current definition reads, below levofloxacin at 0.66 and moxifloxacin at 0.70. The reference label reads the same anchor through `feature_engineering.profile()`, so both sides of every comparison use one definition, and the effect at the MDR boundary is conservative, since a rifampin-monoresistant isolate is placed below MDR rather than above it.
 
-- The regimen layer is scored by exact match to the labeled regimen, which penalizes it for optimizing treatment outcome instead, so part of the measured shortfall is a metric mismatch rather than a modeling error.
+- A regimen is a guideline recommendation, not a per-patient prescription. Where an isolate resists a component drug, the engine keeps the regimen and names the drug in a contraindicated field rather than substituting, since choosing the replacement is a clinical decision the rule base does not model.
 
+- The mono and poly split is performed by the labeling pipeline rather than the rule engine, and it counts every resistant drug rather than the first-line set alone. This matches the terminology used by the Centers for Disease Control and Prevention and extends to second-line agents as WHO anticipated for surveillance. The WHO definition itself is restricted to first-line drugs, so this is a stated deviation. It alters no classification at MDR or above, which the test suite holds structurally.
 
-- CRyPTIC provides genotype and phenotype but not treatment outcomes, so it validates classification only and cannot validate the regimen and outcome layer.
+- Precision is limited by phenotype coverage. The label reads an untested drug as susceptible, and only 59.0 percent of the cohort has both a fluoroquinolone and an injectable result, so a correct genotypic call above MDR can be scored a false positive on an isolate that was never measured. Among the measured isolates, pre-XDR precision improves from 0.483 to 0.616 and XDR from 0.482 to 0.629. XDR sensitivity holds at 54.7 percent, since no isolate can be labeled XDR without a result for both classes, and pre-XDR sensitivity moves only from 61.5 to 61.9 percent. Both readings are reported under `second_line_covered`.
 
+- Sensitivity is bounded by input coverage. Of the 17,523 isolates measured at MDR or above, 3,562 carry no graded mutation and no rule can reach them, so every sensitivity figure should be read against the ceiling reported beside it rather than against 100 percent.
 
-- The rule engine implements a scoped pre-2021 XDR definition, documented as a deliberate choice rather than the current standard, which is built on the Group A drugs. The release does carry bedaquiline and linezolid phenotypes, but on few isolates and at genotypic sensitivity of 0.40 and 0.23. Those are the weakest of the four drugs the current definition reads, below levofloxacin at 0.66 and moxifloxacin at 0.70, so that definition would rest on the thinnest columns in the data.
+- Cross-resistance within the injectable class is modeled as a whole, and the per-drug scoring shows it costs more precision than it gains in sensitivity. The behavior is reported rather than corrected. Narrowing it would not change any tier, because the class rule writes only into the exclusion list and never into the facts the classifier reads, but it would shift every value in the per-drug section, so it is a rescoring rather than a patch. See Future work.
 
-
-- The engine anchors MDR to resistance against isoniazid and rifampin together. The current definition anchors instead to multidrug-resistant or rifampin-resistant tuberculosis, under which rifampin resistance alone qualifies. This follows from the pre-2021 scope described earlier and is applied consistently. The reference label reads the same anchor through `feature_engineering.profile()`, so both sides of the comparison are evaluated against one definition. The effect at that boundary is conservative, because a rifampin-monoresistant isolate is classified below MDR rather than above it, so the engine under-calls rather than over-calls.
-
-
-- A regimen is a guideline recommendation, not a per-patient prescription. Where an isolate is resistant to a component drug, the engine keeps the regimen and names it in a contraindicated field rather than substituting, since choosing the replacement is a clinical decision the rule base does not model.
-
-
-- Both inference paths return the same classification, exclusions, and alerts, and they return the same regimen, inclusions, and monitoring whenever the question asked is a treatment question. A classification question stops at the tier, so the regimen and everything downstream of it is withheld rather than computed. The list of rules fired can differ in one further way. Forward chaining evaluates every rule, so an XDR isolate also fires the pre-XDR rule whose criteria it meets, while backward chaining stops once the XDR goal is proved. The conclusions are identical either way, and the difference is what the two search strategies visit.
-
-
-- Classification and treatment are keyed to different guideline revisions. An isolate is tiered by the pre-2021 definition and routed by WHO 2022 regimen rules, so an injectable-resistant isolate is labeled pre-XDR and still receives BPaLM. Each half is correct on its own terms. Under the current definition, injectable resistance does not reach pre-XDR, so the same isolate would be labeled multidrug-resistant and the pairing would raise no question at all. The mismatch follows from the tiering choice above, not from the regimen rules.
-
-
-- The mono and poly split is performed by the labeling pipeline instead of the rule engine, and it counts every resistant drug rather than just the first-line set. This aligns with the terminology used by the Centers for Disease Control and Prevention and extends to second-line agents as WHO anticipated for surveillance. WHO's own definition is restricted to first-line drugs only, so this is a stated deviation. It alters no classification at MDR or above, which the test suite holds structurally.
-
-
-- Precision is limited by phenotype coverage. The label identifies an untested drug as susceptible. Only 59.0% of the cohort has both a fluoroquinolone and an injectable result. Consequently, a correct genotypic call above MDR can be falsely scored as positive if the isolate was never tested. Among the measured isolates, pre-XDR precision improves from 0.483 to 0.616, and XDR from 0.482 to 0.629, while sensitivity remains unchanged, as reported under `second_line_covered`.
-
-
-- Sensitivity is bounded by input coverage. Of the 17,523 isolates measured at MDR or above, 3,562 carry no graded mutation and cannot be reached by any rule, so every sensitivity figure should be read against the ceiling reported beside it rather than against 100%.
-
-
-- Cross-resistance within the injectable class is modeled as a whole, and the per-drug scoring shows that it costs more precision than it gains in sensitivity. The behavior is observed and reported instead of being corrected. Narrowing it does not change the tier because the class rule only affects the exclusion list and not the facts the classifier uses. However, it shifts every value in the per-drug section, so it should be considered a rescoring rather than a patch. Refer to Future work.
-
-
-- The rule engine does not model ethionamide, so the cross-resistance that links isoniazid and ethionamide through the enoyl reductase gene, written inhA, is out of scope. This is a named boundary rather than an oversight.
-
+- The rule engine does not model ethionamide, so the cross-resistance linking isoniazid and ethionamide through the enoyl reductase gene, written inhA, is out of scope. This is a named boundary rather than an oversight.
 
 ## Future work
 
-Several directions would extend the work, and they fall into two groups, the data the system can reach and the way its layers are scored.
+The directions fall into two groups, the data the system can reach and the way its layers are scored.
 
-The most significant data gap is the synthetic case base. Validating the case-based layer with the TB Portals dataset, which includes actual treatment outcomes, would replace the cohort where real signals are most needed. Real data would strengthen the result without necessarily raising the accuracy, since resistant cases stay rare even in large collections. A trained model could push the results toward the other ceiling. Training such a model with the full genome-wide variant table and the minimum inhibitory concentration magnitudes would explore how much of the genotype-phenotype mismatch can be explained beyond the curated catalog.
+The largest data gap is the synthetic case base. Validating the case-based layer against the TB Portals dataset, which carries real treatment outcomes, would replace the cohort where real signal is most needed. Real data would strengthen the result without necessarily raising accuracy, since resistant cases stay rare even in large collections. Separately, training a model on the full genome-wide variant table and the minimum inhibitory concentration magnitudes would test how much of the genotype-phenotype mismatch can be explained beyond the curated catalog.
 
-The remaining directions concern how the system is evaluated and how it handles rare classes. The regimen layer is scored by exact match to the labeled regimen, which penalizes it for optimizing treatment outcome and guideline adherence instead, so part of the measured shortfall is a metric mismatch rather than a modeling error. Scoring against outcome directly is the simplest of these changes, since it needs no additional data and fixes the mismatch at its source. The outcome layer now carries a measured ceiling, and the gap beneath it is wide enough to make the similarity weights the first thing to tune, scored against that ceiling rather than against a perfect one. Confidence-gated deferral would extend the abstention the engine already performs when its neighbors carry nothing applicable. A sparse neighborhood would hand the case to the rule engine, and the arm would report coverage beside accuracy, which turns rare-class scarcity into calibrated behavior rather than silent error.
+On scoring, the simplest change is to score the regimen layer against outcome directly, which needs no additional data and fixes the metric mismatch at its source. The outcome layer now carries a measured ceiling, and the gap beneath it is wide enough to make the similarity weights the first thing to tune, scored against that ceiling rather than against a perfect one. Confidence-gated deferral would extend the abstention the engine already performs when its neighbors carry nothing applicable. A sparse neighborhood would hand the case to the rule engine, and the arm would report coverage beside accuracy, which turns rare-class scarcity into calibrated behavior rather than silent error.
 
-The whole-class injectable rule groups amikacin, kanamycin, and capreomycin together, and the per-drug scoring shows it over-calls all three against measured phenotype. The cost falls almost entirely on two of them. Amikacin and capreomycin lose 31.7 and 33.7 points of precision for gains of 2.2 and 4.2 in sensitivity, while kanamycin loses 3.9 for a gain of 0.2. That asymmetry is what the expansion would produce if kanamycin, the most frequently resistant of the three, is mainly the source of the added calls rather than their recipient. Tying cross-resistance to the gene instead, with rrs conferring resistance across the class and eis favoring kanamycin, would recover precision without moving any tier, since the class rule writes only into the exclusion list and never into the facts the classifier reads.
-
-
+The whole-class injectable rule groups amikacin, kanamycin, and capreomycin together, and the per-drug scoring shows it over-calls all three against measured phenotype. The cost falls almost entirely on two of them. Amikacin and capreomycin lose 31.7 and 33.7 points of precision for sensitivity gains of 2.2 and 4.2, while kanamycin loses 3.9 for a gain of 0.2. That asymmetry is what the expansion would produce if kanamycin, the most frequently resistant of the three, is mainly the source of the added calls rather than their recipient. Tying cross-resistance to the gene instead, with rrs conferring resistance across the class and eis favoring kanamycin, would recover precision without moving any tier.
 
 ## References
 

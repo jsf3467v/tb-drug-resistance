@@ -1,24 +1,19 @@
-"""Synthetic patient case base for case-based reasoning. No open dataset links
-genotype, regimen, and outcome at the scale retrieval needs, so the cases are
-generated from a fixed seed and are reproducible rather than sampled.
-"""
+"""Synthetic patient case base. No open dataset links genotype, regimen, and
+outcome at the scale retrieval needs, so cases are generated from a fixed seed."""
 
 import random
 from collections import Counter, defaultdict
+from functools import cache
 
 DEFAULT_CASES = 1000
 DEFAULT_SEED = 42
 
-# WHO-informed regional structure. The regions, lineages, and regimen names are
-# real, but the rates and demographic magnitudes are synthetic approximations,
-# not figures transcribed from any specific WHO publication. See README
-# Limitations.
+# Regions, lineages, and regimen names are real. The rates and demographic
+# magnitudes are synthetic approximations. See README Limitations.
 #
-# European sits far above the others on mdr_rate on purpose. The region stands
-# for the Eastern Europe and Central Asia belt, Moldova, Ukraine, Russia, and
-# Kazakhstan in the seed graph, which carries the highest multidrug-resistant
-# burden of any region. Its prev_tx_rate is the highest for the same reason,
-# since prior treatment is a leading risk factor for resistance.
+# European carries the highest mdr_rate and prev_tx_rate on purpose, since the
+# region stands for the belt with the highest multidrug-resistant burden and prior
+# treatment is a leading risk factor.
 REGION_DATA = {
     'African': {
         'hiv_rate': 0.26, 'diabetes_rate': 0.08, 'age_mean': 34, 'age_std': 12,
@@ -62,8 +57,7 @@ BASE_SUCCESS = {
     ('XDR', 'Individualized_20mo'): 0.48
 }
 
-# Regimen share by profile and year. Every profile carries every year, and the
-# shares within a year are weights rather than probabilities.
+# Regimen share by profile and year. Shares within a year are weights.
 REGIMEN_OPTIONS = {
     'Susceptible': {
         '2022': [('2HRZE_4HR', 1.00)],
@@ -203,16 +197,15 @@ def interaction_modifier(case):
 
 
 def success_rate(case):
-    """Base rate for the profile and regimen, lowered for risk. Every adjustment
-    is at most 1.0, so only the floor can bind."""
+    """Base rate for the profile and regimen, lowered for risk. Every adjustment is
+    at most one, so only the floor binds."""
     base = BASE_SUCCESS[(case['profile'], case['regimen'])]
     return max(SUCCESS_FLOOR, base * outcome_modifier(case) * interaction_modifier(case))
 
 
 def profile_quota(n):
-    """Case count per profile, largest remainder so the parts sum to n exactly.
-    Truncating instead would leave a shortfall that the sampler had to absorb
-    somewhere, which silently favored whichever profile it fell back to."""
+    """Case count per profile by largest remainder, so the parts sum to n exactly.
+    Truncating leaves a shortfall that silently favors one profile."""
     exact = {p: n * share for p, share in PROFILE_TARGETS.items()}
     quota = {p: int(v) for p, v in exact.items()}
     order = sorted(exact, key=lambda p: exact[p] - quota[p], reverse=True)
@@ -270,9 +263,8 @@ class CaseGenerator:
         return self.rng.random() < REGION_DATA[region]['prev_tx_rate']
 
     def profile_draw(self, region, previous_treatment, counts, quota):
-        """Weighted draw among profiles below quota. The quota sums to the case
-        count, so one profile always has room and there is no fallback to make.
-        random.choices normalizes the weights, so they are passed as they are."""
+        """Weighted draw among profiles below quota. The quota sums to the case count,
+        so one always has room and no fallback is needed."""
         open_profiles = [p for p in quota if counts[p] < quota[p]]
         weights = [self.profile_weight(p, region, previous_treatment) for p in open_profiles]
         return self.rng.choices(open_profiles, weights=weights)[0]
@@ -337,8 +329,7 @@ class CaseGenerator:
 
 
 def distribution_summary(cases):
-    """Shares and means over the case base, as proportions rather than
-    percentages so the figures match what the notebook computes."""
+    """Shares and means over the case base, as proportions rather than percentages."""
     n = len(cases)
     if not n:
         return {}
@@ -364,22 +355,25 @@ def profile_outcomes(cases):
                 'rate': round(success[p] / total[p], 3)} for p in total}
 
 
+@cache
 def regimen_mix(profile):
-    """Regimen shares for one profile with year marginalized out."""
+    """Regimen shares for one profile, year marginalized out. Cached over six profiles."""
     mix = defaultdict(float)
     for year, year_weight in zip(YEARS, YEAR_WEIGHTS, strict=True):
         options = REGIMEN_OPTIONS[profile][str(year)]
-        scale = year_weight / sum(w for _, w in options)
+        total = sum(w for _, w in options)
+        if not total:
+            continue
         for regimen, weight in options:
-            mix[regimen] += weight * scale
-    return mix
+            mix[regimen] += weight * year_weight / total
+    return dict(mix)
 
 
 def regimen_ceiling(profiles=None):
     """Best regimen accuracy reachable from profile alone. Year also drives the
-    regimen but is independent of every retrieved feature, so no scored predictor
-    observes it and it is marginalized. A subset renormalizes over what is kept."""
-    shares = {p: PROFILE_TARGETS[p] for p in (PROFILE_TARGETS if profiles is None else profiles)}
+    regimen but no retrieved feature sees it, so it is marginalized."""
+    wanted = PROFILE_TARGETS if profiles is None else profiles
+    shares = {p: PROFILE_TARGETS[p] for p in wanted if p in PROFILE_TARGETS}
     if not shares:
         return 0.0
     total = sum(share * max(regimen_mix(p).values()) for p, share in shares.items())
@@ -387,8 +381,8 @@ def regimen_ceiling(profiles=None):
 
 
 def marginal_success(case):
-    """Success probability with the year and the regimen marginalized out, which
-    is what a predictor reading only the retrieved features can reach."""
+    """Success probability with year and regimen marginalized out, which is the
+    reach of a predictor reading only the retrieved features."""
     mix = regimen_mix(case['profile'])
     weight = sum(mix.values())
     if not weight:
@@ -404,18 +398,20 @@ def main():
     cases = case_base()
     summary = distribution_summary(cases)
 
-    print(f"cases {summary['total']}  hiv {summary['hiv_rate']:.1%}  "
+    print(f"{summary['total']} cases  hiv {summary['hiv_rate']:.1%}  "
           f"diabetes {summary['diabetes_rate']:.1%}  prev_tx {summary['prev_tx_rate']:.1%}  "
-          f"age {summary['avg_age']}  success {summary['success_rate']:.1%}")
-    print(f"regimen ceiling {regimen_ceiling():.1%} from profile alone")
+          f"age {summary['avg_age']}  success {summary['success_rate']:.1%}  "
+          f"regimen ceiling {regimen_ceiling():.1%} from profile alone")
 
-    for key in ('profile', 'region', 'year', 'outcome'):
-        shares = "  ".join(f"{n} {s:.1%}" for n, s in sorted(summary[key].items()))
-        print(f"\n{key}\n  {shares}")
+    for key in ('region', 'year', 'outcome'):
+        print(f"  {key:8s}" + "  ".join(f"{n} {s:.1%}" for n, s in sorted(summary[key].items())))
 
-    print("\nsuccess by profile")
-    for profile, stats in sorted(profile_outcomes(cases).items()):
-        print(f"  {profile:14s} {stats['rate']:6.1%}  ({stats['success']}/{stats['total']})")
+    outcomes = profile_outcomes(cases)
+    print(f"\n  {'profile':16s}{'cases':>7s}{'share':>8s}{'success':>9s}")
+    for profile in PROFILE_TARGETS:
+        stats = outcomes[profile]
+        print(f"  {profile:16s}{stats['total']:>7,}{summary['profile'][profile]:>8.1%}"
+              f"{stats['rate']:>9.1%}")
 
 
 if __name__ == '__main__':
