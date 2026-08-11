@@ -110,7 +110,7 @@ Scoring runs through two entry points, both detailed in [DEPLOYME.md](DEPLOYME.m
 ```bash
 python Evaluation/validation.py   # tier, expert-system, and case-based arms
 python Evaluation/metrics.py      # per-drug scoring
-pytest tests/test_core.py         # 125 tests, no database, API, or datasets
+pytest tests/test_core.py         # 127 tests, no database, API, or datasets
 ```
 
 Every scoring primitive comes from `Evaluation/metrics.py`, so the tier arm and the per-drug arm measure the same quantities. The reference arm differs between them. The tier arm reads the catalog profile from `PREDICTIONS.parquet` and the per-drug arm reads it from `EFFECTS.parquet`, so both of its columns come from one table. Compare within an arm rather than across the two files.

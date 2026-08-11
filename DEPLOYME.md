@@ -109,7 +109,7 @@ This clears the graph, applies the schema, loads the seed strains and patients, 
 python SRC/who_catalog.py           # the catalog parses, writes nothing
 python SRC/cbr_cases.py             # the generator runs, writes nothing
 python SRC/feature_engineering.py   # rebuilds the label cache
-python -m pytest tests/ -q          # 125 tests, no database and no API
+python -m pytest tests/ -q          # 127 tests, no database and no API
 python Evaluation/metrics.py        # per-drug scores, no database and no API
 python Evaluation/validation.py     # rebuilds the graph, calls the API
 ```
@@ -138,7 +138,7 @@ From there you can ask questions in plain English and query the synthetic data, 
 python -m pytest tests/ -q
 ```
 
-The 125 tests need no database, API, or datasets, so they run immediately after the install step, provided `pytest` was installed there. The suite runs from the project root or from inside `tests/`. The same suite runs in continuous integration on every push to main and on every pull request, across Python 3.10, 3.11, and 3.12.
+The 127 tests need no database, API, or datasets, so they run immediately after the install step, provided `pytest` was installed there. The suite runs from the project root or from inside `tests/`. The same suite runs in continuous integration on every push to main and on every pull request, across Python 3.10, 3.11, and 3.12.
 
 ## Managing the container
 
