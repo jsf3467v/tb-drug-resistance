@@ -1379,3 +1379,34 @@ def test_label_tiers_match_the_engine_classification():
             label = profile(set(combination))
             expected = [label] if label in tiers else []
             assert classified == expected, combination
+
+def test_specificity_counts_false_positives():
+    # Every per-tier table reports specificity, and tn/(tn+fn) agrees with the
+    # correct form only when fp equals fn, so the counts below keep them apart.
+    from metrics import binary_rates
+
+    actual = [True] * 6 + [False] * 10
+    predicted = [True] * 4 + [False] * 2 + [True] * 3 + [False] * 7
+
+    rates = binary_rates(actual, predicted)
+    assert rates["specificity"] == 7 / 10
+    assert (rates["sensitivity"], rates["precision"]) == (4 / 6, 4 / 7)
+    assert (rates["n"], rates["evaluated"]) == (6, 16)
+
+
+def test_grading_cut_admits_one_and_two():
+    # The merged node counts rest on this cut alone, and widening it changes no
+    # other assertion in the suite, so both the constant and the filter are pinned.
+    from who_catalog import GRADING_CONFIDENCE, WHOCatalog
+
+    assert GRADING_CONFIDENCE == {1: "high", 2: "moderate"}
+
+    grades = ["1) Assoc w R", "2) Assoc w R - Interim", "3) Uncertain significance",
+              "4) Not assoc w R - Interim", "5) Not assoc w R"]
+    frame = pd.DataFrame({
+        "drug": "rifampin", "gene": "rpoB", "mutation": None,
+        "variant": [f"rpoB_p.Ser450Leu{i}" for i in range(len(grades))],
+        "tier": 1, "FINAL CONFIDENCE GRADING": grades,
+    })
+
+    assert sorted(WHOCatalog.graded_rows(frame)["confidence"]) == ["high", "moderate"]
