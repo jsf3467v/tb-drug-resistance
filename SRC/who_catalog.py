@@ -31,8 +31,9 @@ GENE_LOCUS = {
     'Rv0678': 'mmpR5'
 }
 
-# Loci with no accepted symbol. The seed graph names them by locus, so they are
-# resolved rather than gaps, and unmapped_genes leaves them out of its report.
+# Loci with no accepted gene symbol. normalize_gene passes the locus through as
+# the node name, so unmapped_genes leaves them out rather than reporting a gap
+# with no action to take. Neither appears in the graded rows of the 2023 catalog.
 LOCUS_PASSTHROUGH = frozenset({'Rv2477c', 'Rv2752c'})
 
 LOCUS_PATTERN = re.compile(r'Rv\d+[A-Za-z]?|MTB\d+')

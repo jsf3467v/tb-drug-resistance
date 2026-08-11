@@ -45,7 +45,7 @@ resistance_profiles = [
     {'type': 'Susceptible', 'abbreviation': 'S', 'description': 'No resistance detected'},
     {'type': 'MonoResistant', 'abbreviation': 'MR', 'description': 'Resistant to one anti-TB drug'},
     {'type': 'PolyResistant', 'abbreviation': 'PR', 'description': 'Resistant to more than one anti-TB drug, not both isoniazid and rifampin'},
-    {'type': 'MDR', 'abbreviation': 'MDR', 'description': 'Resistant to at least isoniazid and rifampin'},
+    {'type': 'MDR', 'abbreviation': 'MDR', 'description': 'Resistant to at least isoniazid and rifampin (pre-2021 definition)'},
     {'type': 'PreXDR', 'abbreviation': 'PreXDR', 'description': 'MDR + resistant to fluoroquinolone OR injectable (pre-2021 definition)'},
     {'type': 'XDR', 'abbreviation': 'XDR', 'description': 'MDR + resistant to fluoroquinolone AND injectable (pre-2021 definition)'},
 ]
@@ -467,7 +467,7 @@ class TBOntology:
                 """, {'mutations': batch})
                 total += len(batch)
 
-        print(f"Merged {total:,} WHO mutations")
+        print(f"Merged {total:,} WHO mutation-drug pairs")
 
     def count_who_mutations(self):
         """Count mutation nodes carrying WHO catalog data (a confidence tier).
@@ -482,7 +482,7 @@ class TBOntology:
         with self.driver.session() as session:
             result = session.run(query)
             total = result.single()['total'] if result else 0
-        print(f"WHO-sourced mutation nodes: {total}")
+        print(f"WHO-sourced mutation nodes: {total:,}")
         return total
 
     def count_nodes(self):

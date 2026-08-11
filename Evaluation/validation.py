@@ -483,7 +483,8 @@ def expert_accuracy(results, model):
     lower, upper = wilson_interval(hits, total)
     return {
         'model': model,
-        'method': 'execution match of generated Cypher against a gold query',
+        'method': 'execution match of generated Cypher against a gold query. An '
+                  'unanswerable question scores on rejection, whatever caused it',
         'overall': {'rate': round(hits / total, 3) if total else 0.0, 'n': total,
                     'ci_lower': lower, 'ci_upper': upper},
         'by_category': category_rates(scored),
@@ -528,7 +529,7 @@ METHODOLOGY = {
     'calibration': 'ECE of the predicted success probability against the outcome. The '
                    'probability is Laplace-smoothed so the logit both scalings fit stays '
                    'finite, and each scaling is fit per fold on the other folds.',
-    'baseline': 'outcome=always-predict-success, regimen=most-frequent-regimen-per-profile, '
+    'baseline': 'outcome=majority outcome class, regimen=most-frequent-regimen-per-profile, '
                 'fit per training fold and scored on the held-out fold',
     'regimen_mode': 'diagnostic predictor, the most frequent regimen among retrieved '
                     'neighbors, ignoring outcome, to separate objective mismatch from '
@@ -644,7 +645,7 @@ def confusion(truth, prediction):
 
 def agreement(truth, engine, catalog):
     """Prediction match over all isolates, then resistant-tier errors split into
-    shared (biological ceiling) and engine-only. Match rate and McNemar discordance
+    shared, engine-only, and catalog-only. Match rate and McNemar discordance
     are separate counts."""
     resistant = truth.isin(RESISTANT_TIERS)
     engine_ok, catalog_ok = engine == truth, catalog == truth
@@ -772,7 +773,7 @@ def print_class_agreement(agree):
     mc = agree['mcnemar']
     rows(f"engine vs catalog, prediction match {agree['engine_catalog_match']:.1%} "
          f"over all isolates, {agree['engine_catalog_disagreements']} differ", {
-             'resistant truth': f"ceiling {agree['both_wrong']}, "
+            'resistant truth': f"both wrong {agree['both_wrong']}, "
                                 f"engine only {agree['engine_only_wrong']}, "
                                 f"catalog only {agree['catalog_only_wrong']}",
              'McNemar': f"chi2 {mc['chi2']}, p {mc['p_value']:.2e}, "

@@ -1,8 +1,8 @@
 {
-  "timestamp": "2026-07-28T11:42:15.852149",
+  "timestamp": "2026-08-10T19:22:30.139492",
   "expert_system": {
     "model": "claude-sonnet-4-6",
-    "method": "execution match of generated Cypher against a gold query",
+    "method": "execution match of generated Cypher against a gold query. An unanswerable question scores on rejection, whatever caused it",
     "overall": {
       "rate": 0.909,
       "n": 11,
@@ -54,9 +54,9 @@
         "category": "lookup",
         "passed": false,
         "result_count": 0,
-        "time_ms": 2164.0,
+        "time_ms": 2420.0,
         "failure": "{code: Memgraph.ClientError.MemgraphError.MemgraphError} {message: Unbound variable: r.}",
-        "cypher": "MATCH (s:Strain {strain_id: 'TB001'})-[:HAS_MUTATION]->(m:Mutation)-[:CONFERS_RESISTANCE]->(d:Drug)\nRETURN d.name as drug, d.class as drug_class, collect(DISTINCT m.mutation_id) as mutations, collect(DISTINCT r.level) as resistance_levels\nORDER BY drug_class, drug"
+        "cypher": "MATCH (s:Strain {strain_id: 'TB001'})-[:HAS_MUTATION]->(m:Mutation)-[:CONFERS_RESISTANCE]->(d:Drug)\nRETURN d.name as drug, d.class as drug_class, collect(DISTINCT m.mutation_id) as mutations, collect(DISTINCT r.level) as resistance_levels"
       }
     ]
   },
@@ -281,7 +281,7 @@
   "methodology": {
     "confidence_intervals": "95% bootstrap (n=1000) over the pooled out-of-fold cases. fold_std is the spread of the per-fold rates and is reported separately, not as the interval",
     "calibration": "ECE of the predicted success probability against the outcome. The probability is Laplace-smoothed so the logit both scalings fit stays finite, and each scaling is fit per fold on the other folds.",
-    "baseline": "outcome=always-predict-success, regimen=most-frequent-regimen-per-profile, fit per training fold and scored on the held-out fold",
+    "baseline": "outcome=majority outcome class, regimen=most-frequent-regimen-per-profile, fit per training fold and scored on the held-out fold",
     "regimen_mode": "diagnostic predictor, the most frequent regimen among retrieved neighbors, ignoring outcome, to separate objective mismatch from weak retrieval",
     "cbr": "5-fold stratified cross-validation"
   },
