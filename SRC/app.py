@@ -12,13 +12,13 @@ st.set_page_config(
 )
 
 
-def init_system(api_key):
+def hybrid_system(api_key):
     ontology = TBOntology()
     nl_interface = NLInterface(ontology, api_key=api_key)
     return ontology, nl_interface
 
 
-def display_database_stats(ontology):
+def database_stats_block(ontology):
     try:
         node_counts = ontology.count_nodes()
         for node_info in node_counts:
@@ -42,7 +42,7 @@ def cbr_status():
     return True, f"Active with {case_count} cases"
 
 
-def initialize_cbr():
+def cbr_import():
     nl_interface = st.session_state.get('nl_interface')
     ontology = st.session_state.get('ontology')
 
@@ -58,7 +58,7 @@ def initialize_cbr():
             st.info("Importing cases to database, first time only")
             graph_cases()
 
-        case_count = nl_interface.init_cbr()
+        case_count = nl_interface.cbr_case_base()
 
         if case_count > 0 and nl_interface.cbr_engine:
             st.success(f"Imported {case_count} cases")
@@ -72,7 +72,7 @@ def initialize_cbr():
         return False
 
 
-def display_rule_output(rule_output):
+def rule_output_block(rule_output):
     st.subheader("Expert System Analysis")
     rule_metrics(rule_output)
     rule_recommendations(rule_output['recommendations'])
@@ -152,7 +152,7 @@ def monitoring_block(monitoring):
             st.write(f"  Threshold: {m['threshold']}")
 
 
-def display_query_profile(cbr_output):
+def query_profile_block(cbr_output):
     qp = cbr_output.get('query_profile', {})
     if not qp:
         return
@@ -176,7 +176,7 @@ def display_query_profile(cbr_output):
         st.write(f"Previous Tx: {prev_tx}")
 
 
-def display_confidence(cbr_output):
+def confidence_block(cbr_output):
     conf = cbr_output.get('confidence', {})
     if not conf:
         return
@@ -204,7 +204,7 @@ def display_confidence(cbr_output):
         st.caption(interpretation)
 
 
-def display_outcome_analysis(cbr_output):
+def outcome_analysis_block(cbr_output):
     oa = cbr_output.get('outcome_analysis', {})
     if not oa:
         return
@@ -225,7 +225,7 @@ def display_outcome_analysis(cbr_output):
         st.write(f"Risk Factors Present: {', '.join(risk)}")
 
 
-def display_similar_case(exp_case):
+def similar_case_block(exp_case):
     case_id = exp_case.get('case_id', 'Unknown')
     sim = exp_case.get('similarity', 0)
     outcome = exp_case.get('outcome', 'unknown')
@@ -274,7 +274,7 @@ def case_match_lines(exp_case):
         st.write(f"Key Differences: {', '.join(diffs)}")
 
 
-def display_cbr_metrics(cbr_output):
+def cbr_metrics_block(cbr_output):
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric("Similar Cases", len(cbr_output.get('similar_cases', [])))
@@ -287,7 +287,7 @@ def display_cbr_metrics(cbr_output):
         st.metric("Confidence", f"{level} ({score:.2f})")
 
 
-def display_cbr_recommendations(cbr_output):
+def cbr_recommendations_block(cbr_output):
     recs = cbr_output.get('recommendations', [])
     if not recs:
         return
@@ -300,12 +300,12 @@ def display_cbr_recommendations(cbr_output):
         st.write(f"- {regimen}: {rate:.1%} success ({cases} cases) - {conf} confidence")
 
 
-def display_cbr_similar(cbr_output):
+def cbr_similar_block(cbr_output):
     explained = cbr_output.get('explained_cases', [])
     if explained:
         st.write("**Similar Cases - with explanations:**")
         for exp_case in explained[:5]:
-            display_similar_case(exp_case)
+            similar_case_block(exp_case)
         return
 
     similar = cbr_output.get('similar_cases', [])
@@ -318,22 +318,22 @@ def display_cbr_similar(cbr_output):
                 )
 
 
-def display_cbr_output(cbr_output):
+def cbr_output_block(cbr_output):
     st.subheader("Case-Based Reasoning")
-    display_query_profile(cbr_output)
+    query_profile_block(cbr_output)
     st.markdown("---")
-    display_cbr_metrics(cbr_output)
+    cbr_metrics_block(cbr_output)
     st.markdown("---")
-    display_confidence(cbr_output)
+    confidence_block(cbr_output)
     st.markdown("---")
-    display_outcome_analysis(cbr_output)
+    outcome_analysis_block(cbr_output)
     st.markdown("---")
-    display_cbr_recommendations(cbr_output)
+    cbr_recommendations_block(cbr_output)
     st.markdown("---")
-    display_cbr_similar(cbr_output)
+    cbr_similar_block(cbr_output)
 
 
-def display_technical_details(cypher, results):
+def technical_details_block(cypher, results):
     st.subheader("Generated Cypher Query")
     st.code(cypher, language="cypher")
 
@@ -382,7 +382,7 @@ def cypher_outcome(nl_interface, user_question):
     return QueryOutcome(cypher=cypher, results=results)
 
 
-def process_query(user_question):
+def answered_query(user_question):
     nl_interface = st.session_state['nl_interface']
     outcome = cypher_outcome(nl_interface, user_question)
 
@@ -401,7 +401,7 @@ def process_query(user_question):
     return outcome
 
 
-def display_query_tabs(user_question, outcome, nl_interface):
+def query_tabs_block(user_question, outcome, nl_interface):
     tab1, tab2, tab3, tab4 = st.tabs(
         ["Query Results", "Expert System", "Case-Based Reasoning", "Technical Details"])
 
@@ -409,19 +409,19 @@ def display_query_tabs(user_question, outcome, nl_interface):
         if outcome.error:
             st.error(outcome.error)
         else:
-            display_technical_details(outcome.cypher, outcome.results)
+            technical_details_block(outcome.cypher, outcome.results)
 
     if outcome.error or not outcome.results:
         return
 
     with tab2:
         if outcome.rule_output:
-            display_rule_output(outcome.rule_output)
+            rule_output_block(outcome.rule_output)
         else:
             st.info("No expert system rules applicable for this query")
 
     with tab3:
-        display_cbr_tab(outcome, nl_interface)
+        cbr_tab_block(outcome, nl_interface)
 
     with tab1:
         st.subheader("Answer")
@@ -430,12 +430,12 @@ def display_query_tabs(user_question, outcome, nl_interface):
         st.markdown(answer)
 
 
-def display_cbr_tab(outcome, nl_interface):
+def cbr_tab_block(outcome, nl_interface):
     """Case retrieval runs only for treatment questions with an initialized case
     base, so an empty tab has three separate causes. Reporting them all as a
     database error told the user a lookup failed when none was attempted."""
     if outcome.cbr_output:
-        display_cbr_output(outcome.cbr_output)
+        cbr_output_block(outcome.cbr_output)
         return
 
     if outcome.question_type != 'treatment':
@@ -473,7 +473,7 @@ with st.sidebar:
 
         if 'nl_interface' not in st.session_state or st.session_state.get('api_key') != api_key:
             st.session_state['api_key'] = api_key
-            ontology, nl_interface = init_system(api_key)
+            ontology, nl_interface = hybrid_system(api_key)
             st.session_state['ontology'] = ontology
             st.session_state['nl_interface'] = nl_interface
     else:
@@ -483,13 +483,13 @@ with st.sidebar:
 
     st.header("Database Statistics")
     if api_key and 'ontology' in st.session_state:
-        display_database_stats(st.session_state['ontology'])
+        database_stats_block(st.session_state['ontology'])
 
     st.markdown("---")
 
     st.header("CBR System")
     if api_key and st.button("Initialize CBR"):
-        if initialize_cbr():
+        if cbr_import():
             st.rerun()
 
     is_active, status_msg = cbr_status()
@@ -525,5 +525,5 @@ if st.button("Submit Query", type="primary", use_container_width=True):
         st.stop()
 
     with st.spinner("Processing your question"):
-        outcome = process_query(user_question)
-        display_query_tabs(user_question, outcome, nl_interface)
+        outcome = answered_query(user_question)
+        query_tabs_block(user_question, outcome, nl_interface)

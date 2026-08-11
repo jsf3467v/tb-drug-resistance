@@ -1,7 +1,6 @@
-"""WHO mutation catalog reader. Keeps the grading groups associated with
-resistance, maps WHO gene and drug names onto the system's spelling, and yields
-deduplicated mutations for the graph loader.
-"""
+"""WHO mutation catalog reader. Keeps the grading groups associated with resistance,
+maps gene and drug names onto the system spelling, and yields deduplicated
+mutations for the graph loader."""
 
 import re
 import warnings
@@ -11,8 +10,8 @@ import pandas as pd
 
 from config import DRUG_ALIASES
 
-# One locus per symbol, since mutation_id is built from the symbol and a shared
-# symbol would merge distinct variants onto one node.
+# One locus per symbol, since a shared symbol would merge distinct variants onto
+# one node.
 GENE_LOCUS = {
     'Rv0667': 'rpoB', 'Rv1908c': 'katG', 'Rv1484': 'inhA', 'Rv3795': 'embB',
     'Rv2043c': 'pncA', 'Rv0006': 'gyrA', 'Rv0005': 'gyrB', 'Rv0668': 'rpoC',
@@ -31,38 +30,48 @@ GENE_LOCUS = {
     'Rv0678': 'mmpR5'
 }
 
-# Loci with no accepted gene symbol. normalize_gene passes the locus through as
-# the node name, so unmapped_genes leaves them out rather than reporting a gap
-# with no action to take. Neither appears in the graded rows of the 2023 catalog.
+# Loci with no accepted gene symbol. The locus passes through as the node name, so
+# unmapped_genes leaves them out rather than reporting a gap with no fix.
 LOCUS_PASSTHROUGH = frozenset({'Rv2477c', 'Rv2752c'})
 
 LOCUS_PATTERN = re.compile(r'Rv\d+[A-Za-z]?|MTB\d+')
 
-# Grading groups 1 and 2 are associated with resistance. Groups 3 to 5 are dropped.
+# Groups 1 and 2 are associated with resistance. Groups 3 to 5 are dropped.
 GRADING_CONFIDENCE = {1: 'high', 2: 'moderate'}
 
-# A lower grading group is the stronger call, so the group number ranks the level.
+# A lower group is the stronger call, so the number ranks the level.
 CONFIDENCE_RANK = {level: group for group, level in GRADING_CONFIDENCE.items()}
 
-# Normalization is one dict hit rather than a per-row scan.
 GENE_LOOKUP = {locus.lower(): name for locus, name in GENE_LOCUS.items()}
 GENE_LOOKUP.update({name.lower(): name for name in GENE_LOCUS.values()})
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "Datasets"
-WHO_CATALOG_FILE = DATA_DIR / "WHO-UCN-TB-2023.7-eng.xlsx"
+
+# The version separator ships as either a dot or an underscore, so the workbook is
+# matched rather than named.
+CATALOG_PATTERN = "WHO-UCN-TB-2023?7-eng.xlsx"
+
+
+def catalog_file(data_dir=DATA_DIR):
+    """The workbook, or None when absent. The graph loader skips the merge rather
+    than failing, so absence is not an error."""
+    found = sorted(data_dir.glob(CATALOG_PATTERN))
+    return found[0] if found else None
 
 
 class WHOCatalog:
     """The WHO catalog workbook as rows the graph loader can merge."""
 
     def __init__(self, filepath=None):
-        self.filepath = filepath or WHO_CATALOG_FILE
+        self.filepath = filepath or catalog_file()
         self.data = None
 
     def read(self):
-        # openpyxl warns about a conditional formatting extension this reader
-        # never looks at. Scoped, so importing this module stays silent about
-        # every other warning.
+        if self.filepath is None:
+            raise FileNotFoundError(f"no workbook matching {CATALOG_PATTERN} in {DATA_DIR}")
+
+        # openpyxl warns about a conditional formatting extension never read here.
+        # Scoped, so every other warning still surfaces.
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message="Conditional Formatting extension")
             df = pd.read_excel(self.filepath, sheet_name=0, header=2)
@@ -71,8 +80,8 @@ class WHOCatalog:
 
     @staticmethod
     def graded_rows(df):
-        """Rows in grading groups 1 and 2 that carry a variant token. A row with
-        neither token would key a mutation node on a null id."""
+        """Rows in groups 1 and 2 carrying a variant token, since a row with neither
+        would key a mutation node on a null id."""
         gradings = [c for c in df.columns if 'grading' in str(c).lower()]
         if not gradings:
             raise ValueError(f"no grading column in {list(df.columns)}")
@@ -87,7 +96,7 @@ class WHOCatalog:
 
     @staticmethod
     def normalize_gene(who_gene_name):
-        """Map a WHO gene identifier, locus id or symbol, to the standard symbol."""
+        """Map a locus id or symbol to the standard gene symbol."""
         if pd.isna(who_gene_name):
             return None
         gene = str(who_gene_name).strip()
@@ -95,7 +104,7 @@ class WHOCatalog:
 
     @staticmethod
     def normalize_drug(drug_name):
-        """Map a WHO drug name to the system's canonical spelling."""
+        """Map a drug name to the canonical spelling."""
         if pd.isna(drug_name):
             return None
         drug = str(drug_name).lower().strip()
@@ -108,8 +117,8 @@ class WHOCatalog:
         return self.data
 
     def stats(self):
-        # Tiers are counted as they appear: on the 2023 catalog every
-        # resistance-associated row is tier 1, so a fixed tier 2 line read zero.
+        # Tiers are counted as they appear, since every resistance-associated row in
+        # the 2023 catalog is tier 1 and a fixed tier 2 line read zero.
         data = self.rows()
         return {
             'total_mutations': len(data),
@@ -121,9 +130,8 @@ class WHOCatalog:
         }
 
     def unmapped_genes(self):
-        """Locus identifiers the table does not resolve, with their row counts.
-        Gene symbols are left out, since normalize_gene passes them through and
-        the graph merges on the symbol."""
+        """Unresolved locus identifiers with their row counts. Symbols are left out,
+        since they pass through and the graph merges on the symbol."""
         genes = self.rows()['gene'].astype(str).str.strip()
         gaps = (genes.str.fullmatch(LOCUS_PATTERN)
                 & ~genes.str.lower().isin(GENE_LOOKUP)
@@ -131,9 +139,8 @@ class WHOCatalog:
         return {gene: int(n) for gene, n in genes[gaps].value_counts().items()}
 
     def unique_mutations(self, df):
-        """Canonical ids per isolate, deduped on mutation_id and drug. The
-        surviving confidence becomes the level on the resistance edge, so the
-        stronger grading is kept rather than whichever row sits higher."""
+        """Canonical ids deduped on mutation_id and drug. The surviving confidence
+        becomes the edge level, so the stronger grading is kept."""
         gene = df['gene'].map(self.normalize_gene)
         token = df['variant'].fillna(df['mutation']).astype(str).str.split('_', n=1).str[-1]
 
@@ -162,16 +169,15 @@ class WHOCatalog:
 def main():
     catalog = WHOCatalog()
     stats = catalog.stats()
-    print("WHO Data")
-    print(f"Total mutations: {stats['total_mutations']:,}")
-    print(f"Drugs: {stats['unique_drugs']}")
-    print(f"Genes: {stats['unique_genes']}")
-    print("Tier: " + ", ".join(f"{t} {n:,}" for t, n in stats['by_tier'].items()))
-    print("Confidence: " + ", ".join(f"{c} {n:,}" for c, n in stats['by_confidence'].items()))
+    tiers = ", ".join(f"tier {t} {n:,}" for t, n in stats['by_tier'].items())
+    confidence = ", ".join(f"{c} {n:,}" for c, n in stats['by_confidence'].items())
+    print(f"WHO catalog: {stats['total_mutations']:,} graded rows, "
+          f"{stats['unique_drugs']} drugs, {stats['unique_genes']} genes")
+    print(f"  {tiers}   {confidence}")
 
     gaps = catalog.unmapped_genes()
     if gaps:
-        print("Unresolved loci: " + ", ".join(f"{g} {n:,}" for g, n in gaps.items()))
+        print("  unresolved loci " + ", ".join(f"{g} {n:,}" for g, n in gaps.items()))
 
 
 if __name__ == '__main__':

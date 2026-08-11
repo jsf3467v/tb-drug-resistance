@@ -1,6 +1,5 @@
-"""Validation for the TB hybrid system. Covers CBR cross-validation with bootstrap
-intervals and calibration, expert-system query translation against gold queries, and
-CRyPTIC classification."""
+"""Validation across three arms: case-based cross-validation with calibration,
+query translation against gold queries, and CRyPTIC classification."""
 
 import hashlib
 import json
@@ -26,7 +25,7 @@ from calibration import (
     scaled_confidence,
 )
 from cbr_cases import marginal_success, regimen_ceiling
-from config import EXAMPLES, SCHEMA
+from config import EXAMPLES, RESISTANT_TIERS, SCHEMA
 from metrics import (
     RuleEngineEvaluator,
     auc,
@@ -34,15 +33,17 @@ from metrics import (
     brier,
     brier_constant,
     class_rates,
+    expected_calibration_error,
     macro_f1,
     mcnemar,
+    reliability_diagram,
+    safe_ratio,
     wilson_interval,
 )
 
 SEED = 42
 K_FOLDS = 5
 N_CASES = 1000
-N_BINS = 10
 BOOTSTRAP_SAMPLES = 1000
 CBR_NEIGHBORS = 10
 
@@ -51,18 +52,15 @@ EXPERT_CHECKPOINT = EVAL_DIR / ".expert_checkpoint.json"
 
 
 def prompt_tag(model):
-    """Short digest of everything that shapes a generated query. The checkpoint
-    carries it, so editing the schema or the examples discards results written
-    under the old prompt instead of resuming on top of them. The model name is
-    passed in rather than imported, since importing it pulls in the API client."""
+    """Digest of everything shaping a generated query, so editing the schema or the
+    examples discards the old results rather than resuming on top of them."""
     return hashlib.sha256((model + SCHEMA + EXAMPLES).encode()).hexdigest()[:12]
 
 
 def expert_checkpoint(tag, results=None):
-    """Read or write the expert journal, the only arm worth resuming since each
-    query is a paid call. Cleanly scored queries only, so a call that failed on a
-    key or a connection is retried rather than kept as a failure. Deleted once a
-    run finishes clean, so a file on disk means the last run did not."""
+    """Read or write the expert journal. Cleanly scored queries only, so an
+    infrastructure failure is retried. A file left on disk means the run did not
+    finish."""
     if results is not None:
         EXPERT_CHECKPOINT.write_text(json.dumps({"tag": tag, "results": results}))
         return results
@@ -76,12 +74,12 @@ def expert_checkpoint_clear():
     EXPERT_CHECKPOINT.unlink(missing_ok=True)
 
 
-def bootstrap_ci(values, rng, n_samples=BOOTSTRAP_SAMPLES, confidence=0.95):
+def bootstrap_ci(values, rng, confidence=0.95):
     if not values:
         return 0.0, 0.0, 0.0
 
     arr = np.asarray(values, dtype=float)
-    draws = rng.choice(arr, size=(n_samples, arr.size), replace=True).mean(axis=1)
+    draws = rng.choice(arr, size=(BOOTSTRAP_SAMPLES, arr.size), replace=True).mean(axis=1)
 
     alpha = 1.0 - confidence
     lower, upper = np.percentile(draws, [alpha / 2 * 100, (1 - alpha / 2) * 100])
@@ -93,10 +91,8 @@ def rate(results, key):
 
 
 def accuracy_with_ci(all_results, key, rng):
-    """Pooled accuracy with a bootstrap interval over cases, plus the spread
-    across folds. Each case is scored once by a model that did not train on it,
-    so the cases carry the interval. The fold spread answers the separate
-    question of how far the estimate moves when the split moves."""
+    """Pooled accuracy with a bootstrap interval over cases, plus the fold spread.
+    The cases carry the interval; the spread answers how far the split moves it."""
     per_case = [float(r[key]) for fold in all_results for r in fold]
     fold_rates = [rate(fold, key) for fold in all_results]
     center, lower, upper = bootstrap_ci(per_case, rng)
@@ -106,40 +102,6 @@ def accuracy_with_ci(all_results, key, rng):
         'ci_lower': round(lower, 3),
         'ci_upper': round(upper, 3),
     }
-
-
-def confidence_bins(predictions, n_bins=N_BINS):
-    """Per-bin count, summed confidence, and summed hits."""
-    conf = np.fromiter((c for c, _ in predictions), dtype=float, count=len(predictions))
-    hit = np.fromiter((bool(y) for _, y in predictions), dtype=float, count=len(predictions))
-    idx = np.minimum((conf * n_bins).astype(int), n_bins - 1)
-    return (np.bincount(idx, minlength=n_bins),
-            np.bincount(idx, weights=conf, minlength=n_bins),
-            np.bincount(idx, weights=hit, minlength=n_bins))
-
-
-def expected_calibration_error(predictions, n_bins=N_BINS):
-    if not predictions:
-        return 0.0
-    count, conf_sum, hit_sum = confidence_bins(predictions, n_bins)
-    return round(float(np.abs(hit_sum - conf_sum).sum() / count.sum()), 4)
-
-
-def reliability_diagram(predictions, n_bins=N_BINS):
-    count, conf_sum, hit_sum = confidence_bins(predictions, n_bins)
-    width = 1.0 / n_bins
-    edges = np.arange(n_bins) * width
-    safe = np.maximum(count, 1)
-    filled = count > 0
-    conf = np.where(filled, conf_sum / safe, edges + width / 2)
-    acc = hit_sum / safe
-
-    # An empty bin carries no accuracy, so it reports null rather than a zero
-    # the curve would draw as a point.
-    return [{'bin': f"{edges[i]:.1f}-{edges[i] + width:.1f}",
-             'confidence': round(float(conf[i]), 3),
-             'accuracy': round(float(acc[i]), 3) if filled[i] else None,
-             'count': int(count[i])} for i in range(n_bins)]
 
 
 def stratified_folds(cases, k, rng):
@@ -168,9 +130,8 @@ def cbr_query(case):
 
 
 def neighbor_regimen_mode(similar_cases, applicable):
-    """Most frequent applicable regimen among the retrieved neighbors, ties
-    broken by name. Restricted to the same set the recommender may draw from,
-    so the two differ only in how they rank, not in what they may pick."""
+    """Modal applicable regimen among the neighbors, ties broken by name. Drawn
+    from the recommender's own set, so the two differ only in ranking."""
     counts = Counter(case['regimen'] for _, case in similar_cases
                      if case['regimen'] in applicable)
     if not counts:
@@ -207,8 +168,7 @@ def fold_scores(train, test):
 
 
 def profile_accuracy(flat_results):
-    """Regimen accuracy per profile, least to most severe. Retrieval accuracy
-    falls with severity, which the arrival order of the folds hid."""
+    """Regimen accuracy per profile, least to most severe."""
     from config import SEVERITY
 
     by_profile = defaultdict(lambda: {'correct': 0, 'total': 0})
@@ -222,8 +182,8 @@ def profile_accuracy(flat_results):
 
 
 def baseline_accuracy(train, test):
-    """Majority-class floor fit on train and scored on test. regimen_modes comes
-    from cbr_engine, so the floor and the layer it bounds share one definition."""
+    """Floors fit on train and scored on test, outcome by majority class and
+    regimen by profile mode. regimen_modes is shared with the layer it bounds."""
     from cbr_engine import regimen_modes
 
     if not train or not test:
@@ -244,9 +204,8 @@ def baseline_means(baselines):
 
 
 def fold_calibrations(all_results):
-    """Both scalings, fit on the other folds and applied to the held-out one, so
-    no case is scored by a fit that saw it. Temperature is kept because it is the
-    standard method and its failure here is a result, not an omission."""
+    """Both scalings, fit on the other folds and applied to the held-out one.
+    Temperature is kept because its failure here is a result, not an omission."""
     fold_preds = [[(r['success_prob'], 1.0 if r['actual_success'] else 0.0) for r in fold]
                   for fold in all_results]
     temperatures, platts, tempered, platted = [], [], [], []
@@ -271,8 +230,7 @@ def fold_calibrations(all_results):
 
 
 def outcome_ceiling(cases):
-    """Best outcome scores the retrieved features can reach, scored by the same
-    functions the arm is scored with."""
+    """Best outcome scores the retrieved features reach, by the same functions."""
     if not cases:
         return {'auc': 0.0, 'brier': 0.0, 'accuracy': 0.0}
     predictions = [(marginal_success(c), c['outcome'] == 'success') for c in cases]
@@ -282,9 +240,7 @@ def outcome_ceiling(cases):
 
 
 def calibration_summary(all_results, predictions, cases):
-    """Raw and rescaled calibration of the reported success probability. Both
-    scalings are fit per fold on the other folds, so no case is scored by a fit
-    that saw it."""
+    """Raw and rescaled calibration of the reported success probability."""
     temperatures, platts, tempered, platted = fold_calibrations(all_results)
     return {
         'ceiling': outcome_ceiling(cases),
@@ -387,9 +343,8 @@ EXPERT_QUERIES = [
 
 
 def row_values(row):
-    """Canonical value multiset of one result row, free of column order and
-    name. Each repeat carries its occurrence number, so a gold row holding one
-    value twice is not satisfied by a produced row holding it once."""
+    """Value multiset of one row, free of column order and name. Repeats carry an
+    occurrence number, so a doubled gold value needs a doubled produced value."""
     seen = Counter()
     tagged = set()
     for value in row.values():
@@ -400,10 +355,8 @@ def row_values(row):
 
 
 def covers(gold, produced):
-    """True when each gold row's values sit inside a distinct produced row.
-    Greedy assignment strands a later gold row on input that does pair up, so
-    the pairing is solved as a matching. Identical row sets settle before that,
-    and a value index supplies the candidates rather than a full scan."""
+    """True when each gold row sits inside a distinct produced row. Solved as a
+    matching, since greedy assignment strands a later row that would pair up."""
     wanted = [row_values(r) for r in gold]
     pool = [row_values(r) for r in produced]
     if not wanted:
@@ -483,10 +436,8 @@ def category_rates(results):
 
 
 def expert_accuracy(results, model):
-    """Pass rate with a Wilson interval, since eleven queries do not support the
-    precision three decimals imply. Queries that errored on the key or the
-    connection are unscored, matching what the journal keeps, so an infrastructure
-    failure does not read as a wrong answer."""
+    """Pass rate with a Wilson interval, since eleven queries carry no more. A
+    query that errored on the key or the connection is unscored, not wrong."""
     scored = [r for r in results if not r.get('errored')]
     total = len(scored)
     hits = sum(r['passed'] for r in scored)
@@ -547,9 +498,9 @@ METHODOLOGY = {
 }
 
 
-def report_file(expert=None, cbr=None, cryptic=None, path=RESULTS):
+def report_file(expert=None, cbr=None, cryptic=None):
     """Merges into any existing report, so a skipped arm keeps its last result."""
-    data = json.loads(path.read_text()) if path.exists() else {}
+    data = json.loads(RESULTS.read_text()) if RESULTS.exists() else {}
     arms = {'expert_system': expert, 'cbr': cbr, 'cryptic_classification': cryptic}
     fresh = {name: result for name, result in arms.items() if result is not None}
 
@@ -560,7 +511,7 @@ def report_file(expert=None, cbr=None, cryptic=None, path=RESULTS):
     if cbr is not None:
         data['methodology'] = dict(METHODOLOGY, cbr=f"{cbr['k']}-fold stratified cross-validation")
 
-    path.write_text(json.dumps(data, indent=2))
+    RESULTS.write_text(json.dumps(data, indent=2))
     return data
 
 
@@ -624,8 +575,7 @@ def print_summary(data):
 # below-MDR / MDR / PreXDR / XDR, and no genotypic call counts as below-MDR.
 # Heavy imports stay deferred so the expert-system and CBR paths load light.
 
-RESISTANT_TIERS = ("MDR", "PreXDR", "XDR")
-COLLAPSED = ["below-MDR", "MDR", "PreXDR", "XDR"]
+COLLAPSED = ["below-MDR", *RESISTANT_TIERS]
 
 
 def collapse_tier(label):
@@ -633,9 +583,8 @@ def collapse_tier(label):
 
 
 def tier_accuracy(truth, prediction):
-    """Overall and balanced accuracy with macro-F1, over per-tier rates. The
-    per-tier figures live in rates alone. A second copy of sensitivity under the
-    name accuracy sat beside them and invited being read as one."""
+    """Overall and balanced accuracy with macro-F1. The per-tier figures live in
+    rates alone, so sensitivity is not repeated under a second name."""
     rates = {t: r for t, r in class_rates(truth, prediction, COLLAPSED).items() if r['n']}
     overall = float((prediction == truth).mean()) if len(truth) else 0.0
     return {
@@ -656,8 +605,7 @@ def confusion(truth, prediction):
 
 def agreement(truth, engine, catalog):
     """Prediction match over all isolates, then resistant-tier errors split into
-    shared, engine-only, and catalog-only. Match rate and McNemar discordance
-    are separate counts."""
+    shared, engine-only, and catalog-only."""
     resistant = truth.isin(RESISTANT_TIERS)
     engine_ok, catalog_ok = engine == truth, catalog == truth
     engine_only = int((resistant & ~engine_ok & catalog_ok).sum())
@@ -673,7 +621,25 @@ def agreement(truth, engine, catalog):
         'both_wrong': int((resistant & ~engine_ok & ~catalog_ok).sum()),
         'engine_only_wrong': engine_only,
         'catalog_only_wrong': catalog_only,
+        'resistant_disagreements': int((resistant & (engine != catalog)).sum()),
         'mcnemar': mcnemar(engine_only, catalog_only),
+    }
+
+
+def sensitivity_ceiling(truth, reached, sequenced):
+    """Reachable share of resistant truth per tier and pooled. Unreachable
+    isolates split by whether the release sequenced them."""
+    resistant = truth.isin(RESISTANT_TIERS).to_numpy()
+    tiers = truth.to_numpy()[resistant]
+    hit, seq = reached[resistant], sequenced[resistant]
+    return {
+        'by_tier': {t: round(safe_ratio(int(hit[tiers == t].sum()),
+                                        int((tiers == t).sum())), 3)
+                    for t in RESISTANT_TIERS},
+        'pooled': round(safe_ratio(int(hit.sum()), hit.size), 3),
+        'sequenced': round(safe_ratio(int(hit[seq].sum()), int(seq.sum())), 3),
+        'unreachable_sequenced': int((~hit & seq).sum()),
+        'unreachable_unsequenced': int((~hit & ~seq).sum()),
     }
 
 
@@ -705,6 +671,12 @@ class CatalogEvaluator:
         return collapsed.fillna('below-MDR')
 
 
+COVERAGE_NOTE = ('untested drugs read as susceptible, so the full-cohort precision on '
+                 'pre-XDR and XDR carries coverage gaps as errors')
+GENOTYPE_NOTE = ('an isolate the release did not sequence reaches no rule and scores '
+                 'below-MDR for want of input')
+
+
 class ClassificationValidation:
     """Runs every classification sub-unit on all labeled isolates and scores them together."""
 
@@ -724,30 +696,31 @@ class ClassificationValidation:
             engine_eval.name: engine_eval.predictions(self.labeled.index),
             catalog_eval.name: catalog_eval.predictions(self.labeled.index),
         }
-        scores = {name: {**tier_accuracy(self.truth, p), 'confusion': confusion(self.truth, p)}
-                  for name, p in preds.items()}
+        covered = self.labeled['second_line_tested'].to_numpy(dtype=bool)
+        sequenced = self.labeled['catalog'].notna().to_numpy()
+        reached = self.labeled.index.isin(engine_eval.graded()['UNIQUEID'].unique())
 
         return {
             'eval_isolates': len(self.labeled),
             'scheme': 'below-MDR / MDR / PreXDR / XDR; no genotypic call counts as below-MDR',
-            'scores': scores,
-            'second_line_covered': self.covered_scores(preds),
+            'scores': {name: {**tier_accuracy(self.truth, p),
+                              'confusion': confusion(self.truth, p)}
+                       for name, p in preds.items()},
+            'second_line_covered': self.subset_scores(preds, covered, COVERAGE_NOTE),
+            'genotype_covered': self.subset_scores(preds, sequenced, GENOTYPE_NOTE),
+            'sensitivity_ceiling': sensitivity_ceiling(self.truth, reached, sequenced),
             'agreement': agreement(self.truth, preds['rule_engine'], preds['who_catalog']),
             'engine_only_cases': diagnose(engine_eval, self.truth,
                                           preds['rule_engine'], preds['who_catalog']),
         }
 
-    def covered_scores(self, preds):
-        """Tiers rescored on isolates measured for a fluoroquinolone and an
-        injectable. The label reads an untested drug as susceptible, so elsewhere
-        a coverage gap scores as a false positive."""
-        covered = self.labeled['second_line_tested'].to_numpy(dtype=bool)
+    def subset_scores(self, preds, mask, note):
+        """Tiers rescored on a subset, by the function that scores the full cohort."""
         return {
-            'isolates': int(covered.sum()),
-            'share': round(float(covered.mean()), 3),
-            'note': 'untested drugs read as susceptible, so the full-cohort precision '
-                    'on pre-XDR and XDR carries coverage gaps as errors',
-            'scores': {name: tier_accuracy(self.truth[covered], p[covered])
+            'isolates': int(mask.sum()),
+            'share': round(float(mask.mean()), 3),
+            'note': note,
+            'scores': {name: tier_accuracy(self.truth[mask], p[mask])
                        for name, p in preds.items()},
         }
 
@@ -756,15 +729,22 @@ def validate_classification():
     return ClassificationValidation().summary()
 
 
-def print_class_scores(scores):
-    for name, score in scores.items():
-        title = (f"{name}  overall {score['overall']:.1%}, "
-                 f"balanced {score['balanced']:.1%}, macro-F1 {score['macro_f1']:.3f}")
-        rows(title, {
-            tier: (f"sens {r['sensitivity']:.1%}  spec {r['specificity']:.1%}  "
-                   f"ppv {r['precision']:.1%}  (R={r['n']})")
-            for tier in COLLAPSED if (r := score['rates'].get(tier))
-        })
+def print_class_scores(scores, ceiling):
+    """Headline rates per arm, then one row per tier with the reachable share."""
+    rows("overall / balanced / macro-F1",
+         {name: f"{s['overall']:.1%} / {s['balanced']:.1%} / {s['macro_f1']:.3f}"
+          for name, s in scores.items()})
+    print(f"\n  {'tier':11s}{'R':>8s}{'sens':>8s}{'spec':>7s}{'ppv':>7s}"
+          f"{'F1':>8s}{'catalog sens':>14s}{'ceiling':>9s}")
+    for tier in COLLAPSED:
+        r = scores['rule_engine']['rates'].get(tier)
+        if not r:
+            continue
+        reach = ceiling['by_tier'].get(tier)
+        print(f"  {tier:11s}{r['n']:>8,}{r['sensitivity']:>8.1%}{r['specificity']:>7.1%}"
+              f"{r['precision']:>7.1%}{r['f1']:>8.3f}"
+              f"{scores['who_catalog']['rates'][tier]['sensitivity']:>14.1%}"
+              f"{(f'{reach:.1%}' if reach else '-'):>9s}")
 
 
 def print_class_confusion(score):
@@ -792,22 +772,30 @@ def print_class_agreement(agree):
          })
 
 
-def print_covered_scores(covered):
-    """Tier scores where an untested drug cannot count against a genotypic call."""
-    rows(f"second-line tested only, {covered['isolates']:,} isolates "
-         f"({covered['share']:.1%})", {
-             name: (f"overall {s['overall']:.1%}, balanced {s['balanced']:.1%}, "
-                    f"macro-F1 {s['macro_f1']:.3f}")
-             for name, s in covered['scores'].items()
-         })
+def print_subset_scores(title, subset):
+    """Overall, balanced, and macro-F1 per arm on a subset of the cohort."""
+    scored = "   ".join(f"{name} {s['overall']:.1%} / {s['balanced']:.1%} / "
+                        f"{s['macro_f1']:.3f}" for name, s in subset['scores'].items())
+    print(f"  {title:24s}{subset['isolates']:>8,} ({subset['share']:.1%})   {scored}")
+
+
+def print_ceiling(ceiling):
+    """Pooled reachable share and the unreachable split, per tier sits in the table."""
+    print(f"\nsensitivity ceiling {ceiling['pooled']:.1%} pooled, "
+          f"{ceiling['sequenced']:.1%} on sequenced isolates, unreachable "
+          f"{ceiling['unreachable_sequenced']:,} sequenced and "
+          f"{ceiling['unreachable_unsequenced']:,} not")
 
 
 def print_classification(summary):
-    print(f"\nCRyPTIC classification validation, {summary['eval_isolates']:,} labeled isolates")
-    print_class_scores(summary['scores'])
+    print(f"\nCRyPTIC classification, {summary['eval_isolates']:,} labeled isolates")
+    print_class_scores(summary['scores'], summary['sensitivity_ceiling'])
+    print_ceiling(summary['sensitivity_ceiling'])
     print_class_confusion(summary['scores']['rule_engine'])
     print_class_agreement(summary['agreement'])
-    print_covered_scores(summary['second_line_covered'])
+    print("\nrescored subsets, overall / balanced / macro-F1")
+    print_subset_scores("second-line tested", summary['second_line_covered'])
+    print_subset_scores("sequenced", summary['genotype_covered'])
 
 
 def graph_ontology():

@@ -1,4 +1,4 @@
-from config import CLASS_LABELS, CROSS_RESISTANCE
+from config import CLASS_LABELS, CROSS_RESISTANCE, TIER_RANK
 
 HIGH_CONF_GENES = ('rpoB', 'katG', 'inhA', 'embB', 'pncA', 'gyrA')
 
@@ -10,19 +10,16 @@ DRUG_FLAG = {'rifampin': 'rifampin_resistance', 'isoniazid': 'isoniazid_resistan
 DRUG_FLAG.update({drug: f'{label}_resistance'
                   for label, members in CROSS_RESISTANCE.items() for drug in members})
 
-# No BPaL drug is a class member, so this guard is inert today.
+# Flags the inclusion rules read. The filter keeps a class flag from being
+# overwritten if a BPaL drug is ever registered in a class.
 DRUG_FLAG.update({drug: f'{drug}_resistance' for drug in BPAL_DRUGS
                   if drug not in DRUG_FLAG})
 
-# One member firing excludes the whole class. Sorted, because set order varies
-# between processes.
+# One member firing excludes the whole class. Sorted, since set order varies.
 DRUG_CLASSES = {f'{label}_resistance': (label, sorted(members - CLASS_LABELS))
                 for label, members in CROSS_RESISTANCE.items()}
 
-CLASS_SEVERITY = {'MDR': 1, 'PreXDR': 2, 'XDR': 3}
-
-# Monitoring follows regimen composition rather than a rule firing, so an entry
-# names no rule.
+# Monitoring follows regimen composition rather than a rule firing.
 DRUG_MONITORING = {
     'bedaquiline': ('ECG monthly', 'QTc >500ms'),
     'linezolid': ('CBC monthly', 'myelosuppression'),
@@ -32,8 +29,7 @@ DRUG_MONITORING = {
 CLASSIFICATION_GOALS = ('mdr', 'xdr', 'prexdr')
 
 # RC003 implements a fixed external definition, so the pair is named rather than
-# derived from CROSS_RESISTANCE, which would widen pre-XDR whenever a class is
-# registered. They are also the only flags facts() indexes without a default.
+# derived, which would widen pre-XDR whenever a class is registered.
 PREXDR_CLASSES = ('fluoroquinolone_resistance', 'injectable_resistance')
 
 
@@ -64,7 +60,7 @@ class RuleEngine:
         ]
 
     # MDR anchors to isoniazid and rifampin together. The current definition also
-    # admits rifampin resistance alone. See README Limitations.
+    # admits rifampin alone. See README Limitations.
 
     def mdr_detection(self):
         return Rule(
@@ -75,9 +71,8 @@ class RuleEngine:
             source='WHO pre-2021 MDR definition (isoniazid and rifampin)'
         )
 
-    # XDR and pre-XDR use the pre-2021 (2006) injectable-based definitions, not
-    # the current Group A based ones. Bedaquiline and linezolid phenotypes exist
-    # in the release but are thin and weakly graded. See README Limitations.
+    # XDR and pre-XDR use the pre-2021 injectable-based definitions rather than the
+    # current Group A ones. See README Limitations.
 
     def xdr_detection(self):
         return Rule(
@@ -136,8 +131,8 @@ class RuleEngine:
             source='WHO 2022 Guidelines'
         )
 
-    # An inclusion annotates a regimen, and no regimen fires below MDR, so both
-    # indications are scoped to a classification rather than to a drug flag alone.
+    # An inclusion annotates a regimen and no regimen fires below MDR, so both are
+    # scoped to a classification rather than to a drug flag alone.
 
     def bedaquiline_indication(self):
         return Rule(
@@ -169,8 +164,7 @@ class RuleEngine:
         }
 
     def strain_recommendations(self, strain_id, mode='forward', goal=None):
-        """Recommendations alone. Scoring reads only these and runs once per
-        isolate per arm, so the interface fields stay off that path."""
+        """Recommendations alone, so the interface fields stay off the scoring path."""
         self.working_memory = self.facts(strain_id)
         self.fired = []
         if mode == 'backward' and goal:
@@ -207,8 +201,7 @@ class RuleEngine:
 
     def forward_chain(self):
         """Repeat while the last pass changed working memory. A rule fires once, so
-        the rule count bounds the passes; a smaller fixed bound would silently
-        truncate a deeper chain."""
+        the rule count bounds the passes."""
         recommendations = self.empty_recommendations()
         by_priority = sorted(self.rules, key=lambda r: r.priority)
 
@@ -231,20 +224,20 @@ class RuleEngine:
         return recommendations
 
     def reconcile(self, recommendations):
-        """Shared by both inference paths. regimen_conflicts reads self.excluded,
-        so the exclusion passes must run before it."""
+        """Shared by both paths. regimen_conflicts reads self.excluded, so the
+        exclusion passes run first."""
         self.direct_exclusions(recommendations)
         self.class_exclusions(recommendations)
         self.regimen_conflicts(recommendations)
         self.regimen_monitoring(recommendations)
 
     def resolve_classification(self, recommendations):
-        """Keep the most severe classification and drop the protocol alerts of the
-        ones it supersedes. Alerts of any other kind survive."""
+        """Keep the most severe classification and drop only the protocol alerts it
+        supersedes."""
         classes = recommendations['classifications']
         if not classes:
             return
-        top = max(classes, key=lambda c: CLASS_SEVERITY.get(c['type'], 0))
+        top = max(classes, key=lambda c: TIER_RANK.get(c['type'], 0))
         superseded = {f"{c['type']}_protocol" for c in classes if c is not top}
         recommendations['classifications'] = [top]
         recommendations['alerts'] = [a for a in recommendations['alerts']
@@ -271,8 +264,8 @@ class RuleEngine:
                                     f'{label}_cross_resistance')
 
     def regimen_conflicts(self, recommendations):
-        """Name the regimen drugs the isolate is resistant to. Annotates rather
-        than drops, since choosing a substitute is a clinical decision."""
+        """Name the regimen drugs the isolate resists. Annotates rather than drops,
+        since choosing a substitute is a clinical decision."""
         for regimen in recommendations['regimens']:
             blocked = sorted(self.excluded.intersection(regimen['drugs']))
             if blocked:
@@ -286,8 +279,7 @@ class RuleEngine:
         return True
 
     def fire(self, rule, recommendations):
-        """Recorded here rather than at the call site, so a rule reached by either
-        inference path lands in the audit trail the same way."""
+        """Recorded here, so either inference path lands in the audit trail alike."""
         if rule.id not in self.fired:
             self.fired.append(rule.id)
 
@@ -307,9 +299,9 @@ class RuleEngine:
             {'type': value, 'rule': rule.id, 'source': rule.source})
 
     def add_exclusion(self, recommendations, drug, rule_id, reason):
-        """First reason wins. Membership reads a set, not a list scan, which was the
-        one quadratic step on the CRyPTIC path. Class labels are skipped: a
-        patient cannot be excluded from a class."""
+        """First reason wins. Membership reads a set rather than scanning the list,
+        which was the one quadratic step at CRyPTIC scale. Class labels are skipped,
+        since a patient cannot be excluded from a class."""
         if not drug or drug in CLASS_LABELS or drug in self.excluded:
             return
         self.excluded.add(drug)
@@ -335,8 +327,8 @@ class RuleEngine:
             for drug, (parameter, threshold) in DRUG_MONITORING.items() if drug in drugs]
 
     def canonical_gene_fraction(self, mutations):
-        # Reads gene membership only, not the WHO grading tier. Deduped, because one
-        # row per mutation-drug edge arrives here and would double-count.
+        # Gene membership only, not the grading tier. Deduped, since one row per
+        # mutation-drug edge arrives here and would double-count.
         genes = {(mut.get('gene'), mut.get('mutation')): mut.get('gene') for mut in mutations}
         if not genes:
             return 0.0
@@ -367,8 +359,8 @@ class RuleEngine:
                 self.fire(rule, recommendations)
 
     def fire_treatment(self, recommendations):
-        """First treatment rule whose conditions hold. Built from the same factory
-        methods forward chaining uses, so the two paths cannot drift apart."""
+        """First treatment rule whose conditions hold, built from the same factory
+        methods forward chaining uses."""
         for rule in (self.treatment_xdr(), self.treatment_prexdr(),
                      self.treatment_mdr()):
             if self.match(rule):

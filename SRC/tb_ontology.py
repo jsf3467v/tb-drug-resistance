@@ -5,8 +5,8 @@ from neo4j import GraphDatabase, Query
 from who_catalog import WHOCatalog
 
 # SEED DATA
-# Names `strains`, `strain_data`, and `mutations` are referenced by the test
-# suite and the EDA notebook (which parse this module), so they are preserved.
+# `strains`, `strain_data`, and `mutations` are parsed by name from the test suite
+# and the notebook, so the names are preserved.
 
 
 genes = [
@@ -251,8 +251,8 @@ transmissions = [
 ]
 
 
-# Node keys that get a lookup index and a uniqueness constraint. Held as data so
-# the DDL can be rendered for either the Memgraph or the Neo4j dialect.
+# Node keys taking a lookup index and a uniqueness constraint, held as data so the
+# DDL renders for either dialect.
 KEY_SPECS = (
     ('Gene', 'name'),
     ('Drug', 'name'),
@@ -288,9 +288,8 @@ class TBOntology:
             session.run("MATCH (n) DETACH DELETE n")
 
     def schema(self):
-        """Lookup index and uniqueness constraint for each node key, in whichever
-        dialect the backend accepts. Statements neither dialect applies are
-        reported, not silently ignored."""
+        """Index and uniqueness constraint per node key, in whichever dialect the
+        backend accepts. A statement neither applies is reported, not ignored."""
         failed = []
         for label, prop in KEY_SPECS:
             pairs = [
@@ -309,9 +308,8 @@ class TBOntology:
                 print(f"  {note}")
 
     def statement(self, primary, fallback):
-        """Apply a DDL statement, trying the fallback dialect on a syntax error and
-        treating an already-created result as success. Returns a short note if
-        neither dialect applied, else None."""
+        """Apply a DDL statement, falling back to the other dialect on a syntax error
+        and treating an existing object as success. A note when neither applied."""
         last = None
         for statement in (primary, fallback):
             try:
@@ -357,10 +355,9 @@ class TBOntology:
         """, resistance_profiles)
 
     def mutation_nodes(self):
-        """Mutation nodes, their gene, and their drug relationship. A compensatory
-        mutation restores fitness lost to a resistance mutation and does not itself
-        confer resistance, so it takes a separate edge. Modeling it as resistance
-        would put rpoC among the answers to what causes rifampin resistance."""
+        """Mutation nodes with their gene and drug edges. A compensatory mutation
+        restores lost fitness without conferring resistance, so it takes a separate
+        edge rather than putting rpoC among the causes of rifampin resistance."""
         self.batch("""
             UNWIND $rows AS row
             MERGE (m:Mutation {mutation_id: row.id})
@@ -444,11 +441,9 @@ class TBOntology:
             )
 
     def who_mutations(self, filepath=None):
-        """Merge the WHO catalog over the seed graph. The catalog is the
-        authoritative evidence source, so SET is unconditional and a seed
-        mutation sharing a mutation_id has its confidence, tier, and edge level
-        replaced. 19 of the 23 seed mutations overlap this way. Use ON CREATE
-        SET instead if the hand-set seed levels should win."""
+        """Merge the catalog over the seed graph. The catalog is authoritative, so SET
+        is unconditional and a seed mutation sharing an id has its confidence, tier,
+        and edge level replaced. Use ON CREATE SET to keep the seed levels."""
         catalog = WHOCatalog(filepath)
 
         total = 0
@@ -470,9 +465,8 @@ class TBOntology:
         print(f"Merged {total:,} WHO mutation-drug pairs")
 
     def count_who_mutations(self):
-        """Count mutation nodes carrying WHO catalog data (a confidence tier).
-        WHO rows share mutation_ids across drugs, so this node count is lower than
-        the number of merged WHO rows."""
+        """Mutation nodes carrying a catalog confidence. Rows share ids across drugs,
+        so this count is lower than the number merged."""
         query = """
             MATCH (m:Mutation)
             WHERE m.confidence IS NOT NULL
@@ -515,8 +509,8 @@ class TBOntology:
         return self.read_query(query, {'patient_id': patient_id})
 
     def rebuild(self):
-        """Clear, apply the schema, load the seed graph, then merge the WHO
-        catalog. Validation and the module entry point share this one path."""
+        """Clear, apply the schema, seed, then merge the catalog. Shared by validation
+        and the module entry point."""
         self.clear_database()
         self.schema()
         self.ontology_classes()

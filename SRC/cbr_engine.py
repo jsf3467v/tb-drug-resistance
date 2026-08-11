@@ -1,14 +1,12 @@
-"""Case-based reasoning over the synthetic case base. A query scores against
-every stored case in one vectorized pass, and the engine reports the regimens
-the retrieved neighbors received together with how often those regimens
-succeeded.
-"""
+"""Case-based reasoning over the synthetic case base. A query scores against every
+stored case in one vectorized pass, and the engine reports the regimens the
+neighbors received with how often each succeeded."""
 
 from collections import Counter, defaultdict
 
 import numpy as np
 
-from cbr_cases import DEFAULT_CASES, DEFAULT_SEED, case_base
+from cbr_cases import case_base
 from config import SEVERITY
 
 FEATURE_ORDER = ['profile', 'previous_treatment', 'hiv_status', 'region', 'age', 'diabetes', 'sex']
@@ -32,9 +30,8 @@ DEFAULT_SEX = 'M'
 DEFAULT_AGE = 40
 DEFAULT_YEAR = 2022
 
-# Rank given to a profile the table does not name. It resolves to Susceptible,
-# so an unrecognized or missing profile scores as the least resistant tier
-# rather than as absent. Named here because a bare default hid that.
+# An unnamed profile resolves to Susceptible, so it scores as the least resistant
+# tier rather than as absent.
 UNKNOWN_PROFILE_RANK = PROFILE_RANK[DEFAULT_PROFILE]
 
 # Age gap at which age similarity reaches zero, and the credit a region
@@ -49,14 +46,13 @@ PARTIAL_MATCH = 0.30
 MAX_TOP_MATCHES = 3
 MAX_KEY_DIFFERENCES = 2
 
-# Similarity is rounded before thresholding and ranking, so float summation
-# order cannot flip the cutoff or reorder ties.
+# Rounded before thresholding and ranking, so summation order cannot flip the
+# cutoff or reorder ties.
 MIN_SIMILARITY = 0.55
 DEFAULT_NEIGHBORS = 10
 RANK_PRECISION = 12
 
-# Ranking discounts older cases. The floor bounds the discount over a wider
-# span of years than the current case base holds.
+# Ranking discounts older cases, floored over a wider span than the base holds.
 TEMPORAL_DECAY = 0.10
 TEMPORAL_FLOOR = 0.70
 
@@ -75,8 +71,8 @@ CASE_LIMIT = 100
 
 
 class SimilarityCalculator:
-    """One similarity definition, evaluated on column arrays. explain() runs it
-    over a single-case column set, so the breakdown cannot drift from the score."""
+    """One similarity definition on column arrays. explain runs it over a single-case
+    column set, so the breakdown cannot drift from the score."""
 
     def __init__(self, cases=()):
         self.weights = FEATURE_WEIGHTS
@@ -84,8 +80,8 @@ class SimilarityCalculator:
 
     @staticmethod
     def case_columns(cases):
-        """Case base as column arrays, built in a single pass. Categoricals stay
-        object typed so an empty base still compares elementwise."""
+        """Case base as column arrays. Categoricals stay object typed so an empty base
+        still compares elementwise."""
         values = {name: [] for name in FEATURE_ORDER}
         for case in cases:
             values['profile'].append(
@@ -125,9 +121,8 @@ class SimilarityCalculator:
         return sum(self.weights[f] * parts[f] for f in FEATURE_ORDER)
 
     def explain(self, query, case):
-        """Per-feature breakdown of one pairing, ranked by the similarity each
-        feature contributed or cost. Keys are rounded first, so equal
-        contributions tie on feature order rather than on float representation."""
+        """Per-feature breakdown of one pairing, ranked by contribution. Keys are
+        rounded first, so equal contributions tie on feature order."""
         parts = self.feature_scores(query, self.case_columns([case]))
         sims = {f: float(parts[f][0]) for f in FEATURE_ORDER}
         contribution = {f: round(sims[f] * self.weights[f], RANK_PRECISION)
@@ -185,8 +180,7 @@ MIXED_PATTERN = 0.40
 
 class ConfidenceCalculator:
     def score(self, similar_cases, outcome_dist, recommendations):
-        """Confidence for a non-empty neighbor set. The caller handles the empty
-        case, so every factor here has something to read."""
+        """Confidence for a non-empty neighbor set, the empty case being the caller's."""
         n = len(similar_cases)
         avg_sim = sum(s for s, _ in similar_cases) / n
         retrieval = self.retrieval_score(n, avg_sim)
@@ -223,12 +217,10 @@ class ConfidenceCalculator:
         }
 
     def retrieval_score(self, n, avg_sim):
-        """Coverage and closeness, averaged. Closeness is measured against the
-        default cutoff, which retrieve() can be called below, so it is floored
-        at zero. Without the floor a loose retrieval reports negative
-        confidence."""
+        """Coverage and closeness averaged. Retrieval admits nothing below the cutoff,
+        so closeness spans zero to one."""
         count_score = min(1.0, n / GOOD_CASE_COUNT)
-        sim_score = max(0.0, (avg_sim - MIN_SIMILARITY) / (1.0 - MIN_SIMILARITY))
+        sim_score = (avg_sim - MIN_SIMILARITY) / (1.0 - MIN_SIMILARITY)
         return (count_score + sim_score) / 2
 
     def consistency_score(self, outcome_dist):
@@ -292,9 +284,8 @@ class OutcomeAnalyzer:
         return Counter(case.get('outcome', 'unknown') for _, case in similar_cases)
 
     def risk_factors(self, similar_cases):
-        """Features over-represented among the failures. Needs both outcomes
-        present. All four are reported when all four hold, since they sit on
-        different scales and cannot be ranked against each other."""
+        """Features over-represented among the failures, needing both outcomes present.
+        All that hold are reported, since they sit on different scales."""
         failed = [c for _, c in similar_cases if c.get('outcome') != 'success']
         succeeded = [c for _, c in similar_cases if c.get('outcome') == 'success']
         if not failed or not succeeded:
@@ -319,9 +310,14 @@ class OutcomeAnalyzer:
         return ['Older age'] if fail_avg > success_avg + AGE_RISK_GAP else []
 
 
+def smoothed_share(successes, total):
+    """Laplace-smoothed success share, so the logit calibration fits stays finite."""
+    return (successes + 1) / (total + 2)
+
+
 def regimen_modes(cases):
-    """Modal regimen within each profile, ties broken by name. The per-profile
-    baseline in validation and the CBR fallback read this one definition."""
+    """Modal regimen within each profile, ties broken by name. Read by both the
+    validation baseline and the fallback."""
     counts = defaultdict(Counter)
     for case in cases:
         counts[case.get('profile')][case.get('regimen')] += 1
@@ -332,7 +328,6 @@ class CaseRetriever:
     def __init__(self, cases):
         self.cases = cases
         self.calculator = SimilarityCalculator(cases)
-        self.case_ids = np.array([c.get('case_id') for c in cases])
         self.reference_year = max((c.get('year', DEFAULT_YEAR) for c in cases),
                                   default=DEFAULT_YEAR)
         self.temporal = self.temporal_weights()
@@ -341,18 +336,11 @@ class CaseRetriever:
         years = np.array([c.get('year', DEFAULT_YEAR) for c in self.cases], dtype=float)
         return np.maximum(TEMPORAL_FLOOR, 1.0 - (self.reference_year - years) * TEMPORAL_DECAY)
 
-    def retrieve(self, query_case, k=DEFAULT_NEIGHBORS, min_similarity=MIN_SIMILARITY,
-                 exclude_id=None):
-        """Nearest cases above the similarity cutoff. Ranking discounts older
-        cases, so the similarity returned with each case is not the sort key.
-        The temporal product is not rounded, so ties are settled by the stable
-        sort and fall back to case order."""
+    def retrieve(self, query_case, k=DEFAULT_NEIGHBORS):
+        """Nearest cases above the cutoff. Ranking discounts older cases, so the
+        similarity returned is not the sort key, and ties fall to case order."""
         sims = np.round(self.calculator.scores(query_case), RANK_PRECISION)
-        mask = sims >= min_similarity
-        if exclude_id is not None:
-            mask = mask & (self.case_ids != exclude_id)
-
-        idx = np.flatnonzero(mask)
+        idx = np.flatnonzero(sims >= MIN_SIMILARITY)
         if idx.size == 0:
             return []
 
@@ -373,9 +361,8 @@ class CBREngine:
 
     @staticmethod
     def regimens_by_profile(cases):
-        """Regimens the case base pairs with each profile. Retrieval admits
-        neighbors from adjacent profiles, so without this a query can be handed
-        a regimen that is not applicable to it."""
+        """Regimens the case base pairs with each profile. Retrieval admits adjacent
+        profiles, so without this a query can be handed an inapplicable regimen."""
         seen = {}
         for case in cases:
             seen.setdefault(case.get('profile'), set()).add(case.get('regimen'))
@@ -383,13 +370,12 @@ class CBREngine:
 
     @staticmethod
     def success_share(cases):
-        """Success share of the whole case base, used when retrieval finds nothing."""
-        if not cases:
-            return 0.0
-        return sum(c.get('outcome') == 'success' for c in cases) / len(cases)
+        """Success share of the whole base, used when retrieval finds nothing. Smoothed
+        like the retrieved share, so both reach calibration on one scale."""
+        return smoothed_share(sum(c.get('outcome') == 'success' for c in cases), len(cases))
 
-    def recommend(self, query_case, k=DEFAULT_NEIGHBORS, exclude_id=None):
-        similar_cases = self.retriever.retrieve(query_case, k=k, exclude_id=exclude_id)
+    def recommend(self, query_case, k=DEFAULT_NEIGHBORS):
+        similar_cases = self.retriever.retrieve(query_case, k=k)
         if not similar_cases:
             return self.default_recommendation(query_case)
 
@@ -422,11 +408,10 @@ class CBREngine:
         }
 
     def success_rate(self, similar_cases):
-        """Laplace-smoothed share of neighbors that succeeded, read by both the
-        interface and validation. A raw share reaches zero and one, where a logit
-        is undefined."""
+        """Smoothed share of neighbors that succeeded. A raw share reaches zero and
+        one, where the logit is undefined."""
         successes = sum(case['outcome'] == 'success' for _, case in similar_cases)
-        return (successes + 1) / (len(similar_cases) + 2)
+        return smoothed_share(successes, len(similar_cases))
 
     def regimen_stats(self, similar_cases):
         stats = {}
@@ -439,10 +424,9 @@ class CBREngine:
         return stats
 
     def regimen_recommendations(self, similar_cases, profile):
-        """Regimens with enough supporting neighbors, best success rate first,
-        restricted to those the case base pairs with the query profile. An
-        empty list means the neighbors carried nothing applicable, which is the
-        honest answer. Both filters must run before the cut."""
+        """Regimens with enough supporting neighbors, best rate first, restricted to
+        those applicable to the query profile. Both filters run before the cut, and
+        an empty list means the neighbors carried nothing applicable."""
         applicable = self.profile_regimens.get(profile, set())
         stats = self.regimen_stats(similar_cases)
         supported = [(regimen, entry) for regimen, entry in stats.items()
@@ -464,8 +448,7 @@ class CBREngine:
         return 'low'
 
     def explanations(self, query_case, similar_cases):
-        """Feature breakdown of the nearest neighbors. Separate from recommend so
-        the evaluation path does not build it."""
+        """Feature breakdown of the nearest neighbors, kept off the evaluation path."""
         explained = []
         for sim, case in similar_cases[:EXPLAINED_CASES]:
             explanation = self.calculator.explain(query_case, case)
@@ -552,10 +535,10 @@ class CaseStore:
         return [dict(row['c']) for row in results]
 
 
-def graph_cases(n_cases=DEFAULT_CASES, seed=DEFAULT_SEED):
+def graph_cases():
     from tb_ontology import TBOntology
 
-    cases = case_base(n_cases, seed)
+    cases = case_base()
     store = CaseStore(TBOntology())
     store.clear_cases()
     return store.merge(cases)

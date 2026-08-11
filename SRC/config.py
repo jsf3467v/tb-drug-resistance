@@ -183,6 +183,12 @@ Cypher: MATCH (s:Strain)
 # this order, so it cannot differ between them.
 SEVERITY = ('Susceptible', 'MonoResistant', 'PolyResistant', 'MDR', 'PreXDR', 'XDR')
 
+# The tiers the rule engine classifies. The engine ranks them, the label reads
+# them, and the scoring collapses everything else, so all three read this one
+# definition rather than repeating the names.
+RESISTANT_TIERS = ('MDR', 'PreXDR', 'XDR')
+TIER_RANK = {tier: SEVERITY.index(tier) for tier in RESISTANT_TIERS}
+
 # WHO spells this rifampicin; the catalog and the graph use rifampin.
 DRUG_ALIASES = {'rifampicin': 'rifampin'}
 

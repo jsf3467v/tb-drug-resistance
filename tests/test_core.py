@@ -18,7 +18,7 @@ import rule_engine
 import validation
 from calibration import fit_temperature, scaled_confidence
 from cbr_cases import case_base
-from cbr_engine import FEATURE_ORDER, CaseRetriever, CBREngine, SimilarityCalculator
+from cbr_engine import FEATURE_ORDER, CBREngine, SimilarityCalculator
 from config import SEVERITY
 from feature_engineering import second_line_coverage
 from metrics import brier_constant, wilson_interval
@@ -110,8 +110,8 @@ def regimen_drugs(out):
 
 
 def test_prexdr_fq_uses_bpal_not_bpalm():
-    # PreXDR by fluoroquinolone resistance. Moxifloxacin is contraindicated, so the
-    # regimen must be BPaL, never the moxifloxacin-containing BPaLM.
+    # PreXDR by fluoroquinolone resistance, so the regimen is BPaL rather than the
+    # moxifloxacin-containing BPaLM.
     muts = [mutation("rifampin", "rpoB"), mutation("isoniazid", "katG", "k", 315),
             mutation("levofloxacin", "gyrA")]
     for mode, goal in (("forward", None), ("backward", "treatment")):
@@ -121,8 +121,7 @@ def test_prexdr_fq_uses_bpal_not_bpalm():
 
 
 def test_prexdr_injectable_keeps_bpalm():
-    # PreXDR by injectable resistance only. The fluoroquinolones remain usable, so BPaLM
-    # is still appropriate.
+    # PreXDR by injectable resistance only, so the fluoroquinolones stay usable.
     muts = [mutation("rifampin", "rpoB"), mutation("isoniazid", "katG", "k", 315),
             mutation("amikacin", "rrs")]
     out = evaluate(muts, mode="backward", goal="treatment")
@@ -140,8 +139,8 @@ CONTRAINDICATION_CASES = (
 @pytest.mark.parametrize("pairs,blocked", CONTRAINDICATION_CASES)
 @pytest.mark.parametrize("mode,goal", (("forward", None), ("backward", "treatment")))
 def test_regimen_names_its_contraindicated_drugs(pairs, blocked, mode, goal):
-    # The regimen still carries the drug, so the conflict has to be stated rather
-    # than left for the reader to intersect two lists.
+    # The regimen still carries the drug, so the conflict is stated rather than left
+    # to the reader.
     muts = [mutation(drug, gene) for drug, gene in pairs]
     recommendations = evaluate(muts, mode=mode, goal=goal)["recommendations"]
 
@@ -153,8 +152,8 @@ def test_regimen_names_its_contraindicated_drugs(pairs, blocked, mode, goal):
 @pytest.mark.parametrize("pairs,blocked", CONTRAINDICATION_CASES)
 @pytest.mark.parametrize("mode,goal", (("forward", None), ("backward", "treatment")))
 def test_inclusions_never_name_an_excluded_drug(pairs, blocked, mode, goal):
-    # TS004 named bedaquiline on fluoroquinolone resistance alone, even for an
-    # isolate carrying an Rv0678 mutation. It now reads the MDR classification.
+    # TS004 once named bedaquiline on fluoroquinolone resistance alone. It now reads
+    # the MDR classification.
     muts = [mutation(drug, gene) for drug, gene in pairs]
     recommendations = evaluate(muts, mode=mode, goal=goal)["recommendations"]
 
@@ -163,8 +162,7 @@ def test_inclusions_never_name_an_excluded_drug(pairs, blocked, mode, goal):
 
 
 def test_non_protocol_alerts_survive_classification_resolution():
-    # PreXDR and MDR both fire here. Only the superseded protocol alert should
-    # be dropped, not every alert that is not the winner's.
+    # PreXDR and MDR both fire, so only the superseded protocol alert is dropped.
     muts = [mutation(drug="rifampin", gene="rpoB"), mutation(drug="isoniazid", gene="katG"),
             mutation(drug="amikacin", gene="rrs")]
     out = evaluate(muts)["recommendations"]
@@ -239,8 +237,8 @@ def test_fit_temperature_overconfident():
 
 
 def test_saturated_confidence_inflates_the_fitted_temperature():
-    # A score of exactly one clips to a logit near fourteen and dominates the
-    # likelihood. The engine smooths the rate so this cannot reach the fit.
+    # A score of exactly one clips to a large logit and dominates the likelihood,
+    # which the smoothing prevents.
     labels = [1.0] * 90 + [0.0] * 10
     saturated = fit_temperature([1.0] * 100, labels)
     bounded = fit_temperature([0.95] * 100, labels)
@@ -270,8 +268,8 @@ def test_second_line_coverage_needs_both_classes():
     assert list(covered) == [True, False, False, False]
 
 
-# CBR engine. success_rate is the one reported probability, shared by the
-# interface and by validation, so no second copy can drift away from it.
+# CBR engine. success_rate is the one reported probability, shared by the interface
+# and validation.
 
 @pytest.fixture(scope="module")
 def base_cases():
@@ -295,8 +293,7 @@ def test_success_rate_is_the_only_probability(base_cases):
 
 
 def test_evidence_filter_runs_before_the_cut(base_cases):
-    # A regimen with enough support must survive even when thinly supported
-    # regimens outrank it, which slicing before filtering used to discard.
+    # A supported regimen survives even when thinly supported ones outrank it.
     engine = CBREngine(base_cases)
     engine.profile_regimens["MDR"] = {"One", "Two", "Three", "Supported"}
     neighbors = [(1.0, {"regimen": "One", "outcome": "success"}),
@@ -310,10 +307,8 @@ def test_evidence_filter_runs_before_the_cut(base_cases):
 
 
 def test_recommendation_is_applicable_to_the_query_profile(base_cases):
-    # Retrieval admits neighbors from adjacent profiles, so a regimen the case
-    # base never pairs with the query profile could reach the top of the list.
-    # BPaLM carries moxifloxacin, which a fluoroquinolone-resistant patient
-    # cannot take, so this is a safety property rather than an accuracy one.
+    # Retrieval admits adjacent profiles, so an inapplicable regimen could top the
+    # list. BPaLM carries moxifloxacin, so this is a safety property.
     engine = CBREngine(base_cases)
     pairs = {(c["profile"], c["regimen"]) for c in base_cases}
 
@@ -325,8 +320,8 @@ def test_recommendation_is_applicable_to_the_query_profile(base_cases):
 
 
 def test_no_neighbors_falls_back_to_the_prior():
-    # Every feature is opposed, so only the region floor scores and nothing
-    # clears the cutoff. Reporting zero here would assert certain failure.
+    # Every feature is opposed, so nothing clears the cutoff. Zero would assert
+    # certain failure.
     far = {"profile": "Susceptible", "hiv_status": "negative", "age": 20,
            "region": "African", "diabetes": False, "previous_treatment": False,
            "sex": "M", "regimen": "2HRZE_4HR", "year": 2024}
@@ -340,8 +335,7 @@ def test_no_neighbors_falls_back_to_the_prior():
     assert engine.prior_success == pytest.approx(0.5)
     assert a["success_rate"] == pytest.approx(0.5)
 
-    # The fallback regimen comes from the case base, not a separate table, so a
-    # profile the base has never carried abstains instead of inventing one.
+    # The fallback comes from the case base, so an unseen profile abstains.
     assert a["recommendations"] == []
     known = engine.recommend(dict(query, profile="Susceptible"))
     assert known["similar_cases"] == []
@@ -391,16 +385,8 @@ def test_closeness_spans_the_admitted_range(base_cases):
     assert lowest == pytest.approx(0.5)
     assert highest == pytest.approx(1.0)
 
-    scores = {engine.recommend(c, exclude_id=c["case_id"])["confidence"]["score"]
-              for c in base_cases[:120]}
+    scores = {engine.recommend(c)["confidence"]["score"] for c in base_cases[:120]}
     assert len(scores) > 1
-
-
-def test_retrieve_exclude_id(base_cases):
-    retriever = CaseRetriever(base_cases)
-    excluded = base_cases[0]["case_id"]
-    found = retriever.retrieve(base_cases[0], k=10, exclude_id=excluded)
-    assert all(case.get("case_id") != excluded for _, case in found)
 
 
 def test_explain_reproduces_the_ranking_score(base_cases):
@@ -774,27 +760,27 @@ def test_rules_fired_is_the_one_field_the_modes_differ_on():
     assert set(forward["rules_fired"]) - set(backward["rules_fired"]) == {"RC003"}
 
 
+def graded_fields(recommendations):
+    return (
+        [c["type"] for c in recommendations["classifications"]],
+        sorted({e["drug"] for e in recommendations["exclusions"] if e["drug"]}),
+        sorted(a["type"] for a in recommendations["alerts"]),
+    )
+
+
+def prescribed_fields(recommendations):
+    return (sorted((r["name"], tuple(r.get("contraindicated", ())))
+                   for r in recommendations["regimens"]),
+            sorted(m["parameter"] for m in recommendations["monitoring"]),
+            sorted(i["drug"] for i in recommendations["inclusions"]))
+
+
 def test_inference_modes_agree_on_every_resistance_combination():
-    # The evaluation scores forward and the application runs backward, so the
-    # graded fields must agree. Classification withholds regimens on purpose.
-    # No compared field reads the gene, so one placeholder covers the pool.
+    # Evaluation scores forward and the application runs backward, so the graded
+    # fields must agree. Classification withholds regimens on purpose.
     import itertools
 
     pool = flag_representatives()
-
-    def graded(recommendations):
-        return (
-            [c["type"] for c in recommendations["classifications"]],
-            sorted({e["drug"] for e in recommendations["exclusions"] if e["drug"]}),
-            sorted(a["type"] for a in recommendations["alerts"]),
-        )
-
-    def prescribed(recommendations):
-        return (sorted((r["name"], tuple(r.get("contraindicated", ())))
-                       for r in recommendations["regimens"]),
-                sorted(m["parameter"] for m in recommendations["monitoring"]),
-                sorted(i["drug"] for i in recommendations["inclusions"]))
-
     for size in range(len(pool) + 1):
         for combination in itertools.combinations(pool, size):
             muts = [mutation(drug, "g") for drug in combination]
@@ -803,10 +789,10 @@ def test_inference_modes_agree_on_every_resistance_combination():
             classification = evaluate(muts, mode="backward",
                                       goal="classification")["recommendations"]
 
-            assert graded(treatment) == graded(forward), combination
-            assert graded(classification) == graded(forward), combination
-            assert prescribed(treatment) == prescribed(forward), combination
-            assert prescribed(classification) == ([], [], []), combination
+            assert graded_fields(treatment) == graded_fields(forward), combination
+            assert graded_fields(classification) == graded_fields(forward), combination
+            assert prescribed_fields(treatment) == prescribed_fields(forward), combination
+            assert prescribed_fields(classification) == ([], [], []), combination
 
 
 def test_forward_chain_bound_holds_the_whole_rule_set():
@@ -848,6 +834,7 @@ def test_profile_vocabulary_agrees_across_modules():
     # number instead of raising.
     import cbr_cases
     import cbr_engine
+    import config
     import feature_engineering
     import rule_engine
 
@@ -859,9 +846,10 @@ def test_profile_vocabulary_agrees_across_modules():
     assert list(cbr_engine.PROFILE_RANK) == list(feature_engineering.SEVERITY)
     assert set(cbr_cases.MINOR_RESISTANCE) | set(cbr_cases.MAJOR_RESISTANCE) | {
         "Susceptible"} == severity
-    assert set(validation.RESISTANT_TIERS) <= severity
-    assert set(validation.COLLAPSED) == set(validation.RESISTANT_TIERS) | {"below-MDR"}
-    assert set(rule_engine.CLASS_SEVERITY) == set(validation.RESISTANT_TIERS)
+    assert set(config.RESISTANT_TIERS) <= severity
+    assert set(validation.COLLAPSED) == set(config.RESISTANT_TIERS) | {"below-MDR"}
+    assert sorted(rule_engine.TIER_RANK, key=rule_engine.TIER_RANK.get) == list(
+        config.RESISTANT_TIERS)
 
 
 def test_mdr_tiers_do_not_depend_on_the_mono_poly_rule():
@@ -1194,18 +1182,6 @@ def test_outcome_ceiling_beats_the_reported_probability():
     assert 0.5 < ceiling["auc"] <= 1.0
     assert ceiling["brier"] < brier_constant(
         [(0.0, c["outcome"] == "success") for c in cases])
-
-
-def test_retrieval_score_never_goes_negative():
-    # retrieve() takes min_similarity as a parameter, so avg_sim can land below
-    # the constant the score is normalized against.
-    from cbr_engine import MIN_SIMILARITY, ConfidenceCalculator
-
-    confidence = ConfidenceCalculator()
-    assert confidence.retrieval_score(5, 0.06) >= 0.0
-    assert confidence.retrieval_score(1, 0.0) >= 0.0
-    assert confidence.retrieval_score(10, MIN_SIMILARITY) >= 0.0
-    assert confidence.retrieval_score(10, 1.0) == 1.0
 
 
 def test_unknown_profile_scores_as_susceptible():
