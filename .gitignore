@@ -1,21 +1,17 @@
-# ---- Excluded from the public repo (your call-outs) ----
+# ---- Local working files ----
 /Results.rtf
 /smoke_test.sh
 /considerations.rtf
-
-# Personal planning doc - delete this line if you want it public
 /Portfolio_Plan.docx
-
+/TB_Hybrid_Model.pptx
 # ---- Third-party data: not redistributed (see DEPLOYME.md section 4 to obtain) ----
 /Datasets/
-
-# ---- Secrets / environment (never commit) ----
+# ---- Environments (never commit) ----
 .env
 .env.*
 !.env.example
 *.key
 *.pem
-
 # ---- Python ----
 __pycache__/
 *.py[cod]
@@ -25,13 +21,11 @@ __pycache__/
 venv/
 *.egg-info/
 .mypy_cache/
-
+# ---- Generated / transient ----
+Evaluation/.expert_checkpoint.json
 # ---- Office temp / lock files ----
 ~$*
-
 # ---- macOS / editors ----
 .DS_Store
 .idea/
 .vscode/
-/TB_Hybrid_Model.pptx
-Evaluation/.expert_checkpoint.json
