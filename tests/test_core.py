@@ -147,8 +147,8 @@ def test_regimen_names_its_contraindicated_drugs(pairs, blocked, mode, goal):
 @pytest.mark.parametrize("pairs,blocked", CONTRAINDICATION_CASES)
 @pytest.mark.parametrize("mode,goal", (("forward", None), ("backward", "treatment")))
 def test_inclusions_never_name_an_excluded_drug(pairs, blocked, mode, goal):
-    # TS004 used to recommend bedaquiline on fluoroquinolone resistance alone, even
-    # for an isolate carrying an Rv0678 mutation.
+    # TS004 named bedaquiline on fluoroquinolone resistance alone, even for an
+    # isolate carrying an Rv0678 mutation. It now reads the MDR classification.
     muts = [mutation(drug, gene) for drug, gene in pairs]
     recommendations = evaluate(muts, mode=mode, goal=goal)["recommendations"]
 
@@ -1275,6 +1275,16 @@ def test_inclusion_rule_reaches_the_audit_trail():
         assert {"TS004", "TS005"} <= set(fired), mode
 
 
+@pytest.mark.parametrize("mode,goal", (("forward", None), ("backward", "treatment")))
+def test_inclusion_rule_is_scoped_to_mdr(mode, goal):
+    # A fluoroquinolone-resistant isolate that is rifampin susceptible sits below
+    # MDR, so no regimen fires and the inclusion has nothing to annotate.
+    out = evaluate([mutation("levofloxacin", "gyrA")], mode=mode, goal=goal)
+
+    assert "TS004" not in out["rules_fired"], mode
+    assert out["recommendations"]["inclusions"] == [], mode
+
+
 def test_no_rule_is_logged_twice():
     muts = [mutation("rifampin", "rpoB"), mutation("isoniazid", "katG"),
             mutation("levofloxacin", "gyrA"), mutation("amikacin", "rrs")]
@@ -1308,8 +1318,9 @@ def test_gene_symbol_is_not_reported_as_a_gap():
 
 
 def test_intentional_passthrough_locus_is_not_reported():
-    # These loci carry no accepted symbol and the seed graph names them by locus,
-    # so they would otherwise sit in the report on every run with no action to take.
+    # These loci carry no accepted symbol, so normalize_gene passes the locus
+    # through as the node name. Neither appears in the graded rows of the 2023
+    # catalog, so this case is exercised here rather than reached in a run.
     assert gene_catalog(["Rv2477c"] * 127).unmapped_genes() == {}
 
 

@@ -56,13 +56,16 @@ class RuleEngine:
             self.linezolid_indication()
         ]
 
+    # MDR anchors to isoniazid and rifampin together. The current definition also
+    # admits rifampin resistance alone. See README Limitations.
+
     def mdr_detection(self):
         return Rule(
             rule_id='RC001',
             priority=1,
             conditions={'rifampin_resistance': True, 'isoniazid_resistance': True},
             actions={'classify': 'MDR', 'alert': 'MDR_protocol'},
-            source='WHO 2022 Guidelines'
+            source='WHO pre-2021 MDR definition (isoniazid and rifampin)'
         )
 
     # XDR and pre-XDR use the pre-2021 (2006) injectable-based definitions, not
@@ -126,11 +129,15 @@ class RuleEngine:
             source='WHO 2022 Guidelines'
         )
 
+    # An inclusion annotates a regimen, and no regimen fires below MDR, so both
+    # indications are scoped to a classification rather than to a drug flag alone.
+
     def bedaquiline_indication(self):
         return Rule(
             rule_id='TS004',
             priority=3,
-            conditions={'fluoroquinolone_resistance': True, 'bedaquiline_resistance': False},
+            conditions={'mdr': True, 'fluoroquinolone_resistance': True,
+                        'bedaquiline_resistance': False},
             actions={'include': 'bedaquiline', 'rationale': 'FQ resistance'},
             source='WHO 2022 Guidelines'
         )
