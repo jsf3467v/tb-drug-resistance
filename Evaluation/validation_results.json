@@ -1,17 +1,17 @@
 {
-  "timestamp": "2026-08-10T22:19:57.738870",
+  "timestamp": "2026-08-11T02:22:58.519898",
   "expert_system": {
     "model": "claude-sonnet-4-6",
     "method": "execution match of generated Cypher against a gold query. An unanswerable question scores on rejection, whatever caused it",
     "overall": {
-      "rate": 0.909,
+      "rate": 1.0,
       "n": 11,
-      "ci_lower": 0.623,
-      "ci_upper": 0.984
+      "ci_lower": 0.741,
+      "ci_upper": 1.0
     },
     "by_category": {
       "lookup": {
-        "rate": 0.5,
+        "rate": 1.0,
         "n": 2
       },
       "filter": {
@@ -48,17 +48,7 @@
       }
     },
     "errored": [],
-    "failures": [
-      {
-        "id": 2,
-        "category": "lookup",
-        "passed": false,
-        "result_count": 0,
-        "time_ms": 3386.8,
-        "failure": "{code: Memgraph.ClientError.MemgraphError.MemgraphError} {message: Unbound variable: r.}",
-        "cypher": "MATCH (s:Strain {strain_id: 'TB001'})-[:HAS_MUTATION]->(m:Mutation)-[:CONFERS_RESISTANCE]->(d:Drug)\nRETURN d.name as drug, d.class as drug_class, collect(DISTINCT m.mutation_id) as mutations, collect(DISTINCT r.level) as resistance_levels"
-      }
-    ]
+    "failures": []
   },
   "cbr": {
     "k": 5,
@@ -510,6 +500,102 @@
         }
       }
     },
+    "genotype_covered": {
+      "isolates": 53735,
+      "share": 0.819,
+      "note": "an isolate the release did not sequence reaches no rule and scores below-MDR for want of input",
+      "scores": {
+        "rule_engine": {
+          "overall": 0.856,
+          "balanced": 0.788,
+          "macro_f1": 0.715,
+          "rates": {
+            "below-MDR": {
+              "sensitivity": 0.8973122509580975,
+              "specificity": 0.9210269289800475,
+              "precision": 0.9689752514594239,
+              "f1": 0.9317678684376977,
+              "n": 39401,
+              "evaluated": 53735
+            },
+            "MDR": {
+              "sensitivity": 0.7367511520737328,
+              "specificity": 0.9545666407723893,
+              "precision": 0.7575219142383322,
+              "f1": 0.7469921738114706,
+              "n": 8680,
+              "evaluated": 53735
+            },
+            "PreXDR": {
+              "sensitivity": 0.7423312883435583,
+              "specificity": 0.937659313971459,
+              "precision": 0.4831946755407654,
+              "f1": 0.5853658536585367,
+              "n": 3912,
+              "evaluated": 53735
+            },
+            "XDR": {
+              "sensitivity": 0.7738231917336394,
+              "specificity": 0.9721500971284596,
+              "precision": 0.4821173104434907,
+              "f1": 0.5940943146760688,
+              "n": 1742,
+              "evaluated": 53735
+            }
+          }
+        },
+        "who_catalog": {
+          "overall": 0.858,
+          "balanced": 0.793,
+          "macro_f1": 0.718,
+          "rates": {
+            "below-MDR": {
+              "sensitivity": 0.8973122509580975,
+              "specificity": 0.9277940560904144,
+              "precision": 0.971558120362737,
+              "f1": 0.9329603778812788,
+              "n": 39401,
+              "evaluated": 53735
+            },
+            "MDR": {
+              "sensitivity": 0.7429723502304147,
+              "specificity": 0.9544556652979691,
+              "precision": 0.7586166333372545,
+              "f1": 0.7507129969151971,
+              "n": 8680,
+              "evaluated": 53735
+            },
+            "PreXDR": {
+              "sensitivity": 0.7484662576687117,
+              "specificity": 0.937759669229071,
+              "precision": 0.48565267871952233,
+              "f1": 0.5890755457197465,
+              "n": 3912,
+              "evaluated": 53735
+            },
+            "XDR": {
+              "sensitivity": 0.7847301951779564,
+              "specificity": 0.9721500971284596,
+              "precision": 0.4856127886323268,
+              "f1": 0.5999561114768488,
+              "n": 1742,
+              "evaluated": 53735
+            }
+          }
+        }
+      }
+    },
+    "sensitivity_ceiling": {
+      "by_tier": {
+        "MDR": 0.817,
+        "PreXDR": 0.811,
+        "XDR": 0.684
+      },
+      "pooled": 0.797,
+      "sequenced": 0.973,
+      "unreachable_sequenced": 380,
+      "unreachable_unsequenced": 3182
+    },
     "agreement": {
       "scheme": "match spans every isolate, mcnemar counts only resistant truth and only where the arms differ in correctness",
       "engine_catalog_match": 0.998,
@@ -519,6 +605,7 @@
       "both_wrong": 6772,
       "engine_only_wrong": 98,
       "catalog_only_wrong": 7,
+      "resistant_disagreements": 123,
       "mcnemar": {
         "chi2": 77.14,
         "p_value": 1.5902873970263575e-18,
