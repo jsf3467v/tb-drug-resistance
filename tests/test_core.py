@@ -1117,6 +1117,26 @@ def test_auc_handles_ties_and_a_single_class():
     assert brier_constant([(0.3, True), (0.9, False)]) == 0.25
 
 
+def test_mcnemar_reads_only_the_discordant_pairs():
+    # Every chi-square reported in the README comes from here, so the continuity
+    # correction is pinned rather than trusted. Equal disagreement has to score
+    # zero, and a single discordant pair would go negative uncorrected.
+    from metrics import mcnemar
+
+    assert mcnemar(0, 0) == {"chi2": 0.0, "p_value": 1.0, "discordant": 0}
+    assert mcnemar(5, 5)["chi2"] == 0.0
+    assert mcnemar(1, 0)["chi2"] == 0.0
+
+    restricted = mcnemar(18, 7)
+    assert restricted["discordant"] == 25
+    assert restricted["chi2"] == 4.0
+    assert round(restricted["p_value"], 4) == 0.0455
+
+    # Symmetric in its arguments, since the test asks whether the two arms
+    # disagree rather than which one is ahead.
+    assert mcnemar(7, 18) == restricted
+
+
 def test_penalties_can_only_lower_the_success_rate():
     # The floor comment claims every penalty is at most 1.0, so only SUCCESS_FLOOR
     # can bind. One above 1.0 would silently make a risk factor protective.

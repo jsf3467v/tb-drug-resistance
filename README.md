@@ -223,7 +223,7 @@ python Evaluation/metrics.py
 
 The shared scoring functions, such as sensitivity, specificity, precision, F1, balanced accuracy, macro-F1, the McNemar test, and the Brier score, are located in `Evaluation/metrics.py`. This ensures that the tier scoring in `validation.py` and the per-drug scoring measure the same metrics consistently. However, the reference arm differs between the two; the tier arm fetches the catalog profile from `PREDICTIONS.parquet`, while the per-drug arm retrieves it from `EFFECTS.parquet` so that both columns come from one table. It is advisable to compare within the same arm rather than across different files.
 
-A standalone deterministic test suite with 123 tests verifies rule-engine classification, calibration calculations, the read-only query guard and routing, generator determinism, seed-graph integrity, and consistency between the two inference modes. It operates without needing a database, API, or datasets and runs from the project root.
+A standalone deterministic test suite with 124 tests verifies rule-engine classification, calibration calculations, the read-only query guard and routing, generator determinism, seed-graph integrity, and consistency between the two inference modes. It operates without needing a database, API, or datasets and runs from the project root.
 
 ```bash
 pytest tests/test_core.py
@@ -233,7 +233,7 @@ The same suite executes in continuous integration for every push to `main` and e
 
 ### Reproducing
 
-The project builds up in three levels, each adding to the previous one. The test suite only requires running `pip install -r requirements-dev.txt` and includes 123 tests that verify the rule engine, calibration calculations, query guard, and seed-graph integrity. Incorporating Docker and an Anthropic API key activates the demo and the expert-system component on the seed graph, all without downloading any datasets. Including the `Datasets/` folder enables access to the CRyPTIC data and per-drug metrics mentioned earlier.
+The project builds up in three levels, each adding to the previous one. The test suite only requires running `pip install -r requirements-dev.txt` and includes 124 tests that verify the rule engine, calibration calculations, query guard, and seed-graph integrity. Incorporating Docker and an Anthropic API key activates the demo and the expert-system component on the seed graph, all without downloading any datasets. Including the `Datasets/` folder enables access to the CRyPTIC data and per-drug metrics mentioned earlier.
 
 The CRyPTIC, per-drug, and case-based arms are deterministic, seeded at 42. Repeated runs consistently reproduce every digit in the two result files, with only the last decimal place of one p-value varying due to differences in floating-point summation order. The expert-system arm calls a live model, and four runs yielded ten out of eleven three times and eleven out of eleven once; this is the only figure expected to change and is reported alongside its generating model. The full procedure is detailed in [DEPLOYME.md](DEPLOYME.md).
 
