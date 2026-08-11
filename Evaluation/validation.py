@@ -25,7 +25,7 @@ from calibration import (
     platt_confidence,
     scaled_confidence,
 )
-from cbr_cases import regimen_ceiling
+from cbr_cases import marginal_success, regimen_ceiling
 from config import EXAMPLES, SCHEMA
 from metrics import (
     RuleEngineEvaluator,
@@ -76,11 +76,10 @@ def expert_checkpoint_clear():
     EXPERT_CHECKPOINT.unlink(missing_ok=True)
 
 
-def bootstrap_ci(values, n_samples=BOOTSTRAP_SAMPLES, confidence=0.95, rng=None):
+def bootstrap_ci(values, rng, n_samples=BOOTSTRAP_SAMPLES, confidence=0.95):
     if not values:
         return 0.0, 0.0, 0.0
 
-    rng = rng or np.random.default_rng()
     arr = np.asarray(values, dtype=float)
     draws = rng.choice(arr, size=(n_samples, arr.size), replace=True).mean(axis=1)
 
@@ -93,14 +92,14 @@ def rate(results, key):
     return sum(r[key] for r in results) / len(results) if results else 0.0
 
 
-def accuracy_with_ci(all_results, key, rng=None):
+def accuracy_with_ci(all_results, key, rng):
     """Pooled accuracy with a bootstrap interval over cases, plus the spread
     across folds. Each case is scored once by a model that did not train on it,
     so the cases carry the interval. The fold spread answers the separate
     question of how far the estimate moves when the split moves."""
     per_case = [float(r[key]) for fold in all_results for r in fold]
     fold_rates = [rate(fold, key) for fold in all_results]
-    center, lower, upper = bootstrap_ci(per_case, rng=rng)
+    center, lower, upper = bootstrap_ci(per_case, rng)
     return {
         'mean': round(center, 3),
         'fold_std': round(float(np.std(fold_rates, ddof=1)), 3) if len(fold_rates) > 1 else 0.0,
@@ -143,8 +142,7 @@ def reliability_diagram(predictions, n_bins=N_BINS):
              'count': int(count[i])} for i in range(n_bins)]
 
 
-def stratified_folds(cases, k=K_FOLDS, rng=None):
-    rng = rng or random.Random()
+def stratified_folds(cases, k, rng):
     by_profile = defaultdict(list)
     for case in cases:
         by_profile[case['profile']].append(case)
@@ -272,12 +270,24 @@ def fold_calibrations(all_results):
     return temperatures, platts, tempered, platted
 
 
-def calibration_summary(all_results, predictions):
+def outcome_ceiling(cases):
+    """Best outcome scores the retrieved features can reach, scored by the same
+    functions the arm is scored with."""
+    if not cases:
+        return {'auc': 0.0, 'brier': 0.0, 'accuracy': 0.0}
+    predictions = [(marginal_success(c), c['outcome'] == 'success') for c in cases]
+    hits = sum((p >= 0.5) == y for p, y in predictions)
+    return {'auc': auc(predictions), 'brier': brier(predictions),
+            'accuracy': round(hits / len(cases), 3)}
+
+
+def calibration_summary(all_results, predictions, cases):
     """Raw and rescaled calibration of the reported success probability. Both
     scalings are fit per fold on the other folds, so no case is scored by a fit
     that saw it."""
     temperatures, platts, tempered, platted = fold_calibrations(all_results)
     return {
+        'ceiling': outcome_ceiling(cases),
         'ece': expected_calibration_error(predictions),
         'brier': brier(predictions),
         'brier_constant': brier_constant(predictions),
@@ -290,13 +300,13 @@ def calibration_summary(all_results, predictions):
         'platt_per_fold': platts,
         'platt_note': 'the slope shrinks the score toward the base rate, so most of '
                       'the lower scaled ECE is shrinkage rather than signal. Ranking '
-                      'is unchanged, so auc is the figure to read',
+                      'is unchanged, so auc against the ceiling is the figure to read',
         'reliability': reliability_diagram(predictions),
         'reliability_platt': reliability_diagram(platted),
     }
 
 
-def aggregate_cbr_folds(all_results, baselines, k, seed=SEED):
+def aggregate_cbr_folds(all_results, baselines, cases, k, seed=SEED):
     flat = [r for fold in all_results for r in fold]
     rng = np.random.default_rng(seed)
     predictions = [(r['success_prob'], r['actual_success']) for r in flat]
@@ -311,7 +321,7 @@ def aggregate_cbr_folds(all_results, baselines, k, seed=SEED):
         'abstentions': sum(r['abstained'] for r in flat),
         'baseline': baseline_means(baselines),
         'ceiling': regimen_ceiling(),
-        'calibration': calibration_summary(all_results, predictions),
+        'calibration': calibration_summary(all_results, predictions, cases),
     }
 
 
@@ -320,7 +330,7 @@ def validate_cbr(cases, k=K_FOLDS, seed=SEED):
     splits = stratified_folds(cases, k, random.Random(seed))
     folds = [fold_scores(train, test) for train, test in splits]
     baselines = [baseline_accuracy(train, test) for train, test in splits]
-    return aggregate_cbr_folds(folds, baselines, k, seed)
+    return aggregate_cbr_folds(folds, baselines, cases, k, seed)
 
 
 # EXPERT SYSTEM VALIDATION
@@ -593,9 +603,10 @@ def print_cbr_summary(cbr):
                f"(no gain, T={cal['temperature_mean']})",
         'Brier': f"{cal['brier']:.4f} raw, {cal['brier_platt_scaled']:.4f} platt scaled, "
                  f"{cal['brier_constant']:.4f} constant at base rate",
-        'AUC': f"{cal['auc']:.3f} raw probability",
+        'AUC': f"{cal['auc']:.3f} raw probability, ceiling {cal['ceiling']['auc']:.3f}",
         'baseline': f"regimen {base['regimen']:.1%}, outcome {base['outcome']:.1%}",
-        'ceiling': f"regimen {cbr['ceiling']:.1%}, from profile alone",
+        'ceiling': f"regimen {cbr['ceiling']:.1%} from profile alone, "
+                   f"outcome {cal['ceiling']['accuracy']:.1%} from the retrieved features",
     })
     rows("CBR by profile",
          {profile: f"{p['accuracy']:.1%} (n={p['n']})"

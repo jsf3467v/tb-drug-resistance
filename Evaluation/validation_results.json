@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-08-10T19:22:30.139492",
+  "timestamp": "2026-08-10T22:19:57.738870",
   "expert_system": {
     "model": "claude-sonnet-4-6",
     "method": "execution match of generated Cypher against a gold query. An unanswerable question scores on rejection, whatever caused it",
@@ -54,7 +54,7 @@
         "category": "lookup",
         "passed": false,
         "result_count": 0,
-        "time_ms": 2420.0,
+        "time_ms": 3386.8,
         "failure": "{code: Memgraph.ClientError.MemgraphError.MemgraphError} {message: Unbound variable: r.}",
         "cypher": "MATCH (s:Strain {strain_id: 'TB001'})-[:HAS_MUTATION]->(m:Mutation)-[:CONFERS_RESISTANCE]->(d:Drug)\nRETURN d.name as drug, d.class as drug_class, collect(DISTINCT m.mutation_id) as mutations, collect(DISTINCT r.level) as resistance_levels"
       }
@@ -114,6 +114,11 @@
     },
     "ceiling": 0.798,
     "calibration": {
+      "ceiling": {
+        "auc": 0.6685,
+        "brier": 0.176,
+        "accuracy": 0.755
+      },
       "ece": 0.0942,
       "brier": 0.1951,
       "brier_constant": 0.1895,
@@ -151,7 +156,7 @@
           0.792
         ]
       ],
-      "platt_note": "the slope shrinks the score toward the base rate, so most of the lower scaled ECE is shrinkage rather than signal. Ranking is unchanged, so auc is the figure to read",
+      "platt_note": "the slope shrinks the score toward the base rate, so most of the lower scaled ECE is shrinkage rather than signal. Ranking is unchanged, so auc against the ceiling is the figure to read",
       "reliability": [
         {
           "bin": "0.0-0.1",

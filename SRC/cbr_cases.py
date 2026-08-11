@@ -171,6 +171,44 @@ def age_penalty(age):
     return next((penalty for threshold, penalty in AGE_PENALTIES if age > threshold), 1.0)
 
 
+def outcome_modifier(case):
+    modifier = 1.0
+    if case['hiv_status'] == 'positive':
+        modifier *= HIV_PENALTY
+    if case['diabetes']:
+        modifier *= DIABETES_PENALTY
+    modifier *= age_penalty(case['age'])
+    if case['previous_treatment']:
+        modifier *= PREV_TX_PENALTY
+    if case['sex'] == 'M':
+        modifier *= MALE_PENALTY
+    return modifier
+
+
+def interaction_modifier(case):
+    hiv = case['hiv_status'] == 'positive'
+    hiv_age, hiv_age_penalty = HIV_AGE_PENALTY
+    diabetes_age, diabetes_age_penalty = DIABETES_AGE_PENALTY
+
+    modifier = 1.0
+    if hiv and case['diabetes']:
+        modifier *= HIV_DIABETES_PENALTY
+    if hiv and case['age'] > hiv_age:
+        modifier *= hiv_age_penalty
+    if case['previous_treatment'] and case['profile'] in MAJOR_RESISTANCE:
+        modifier *= PREV_TX_MAJOR_PENALTY
+    if case['diabetes'] and case['age'] > diabetes_age:
+        modifier *= diabetes_age_penalty
+    return modifier
+
+
+def success_rate(case):
+    """Base rate for the profile and regimen, lowered for risk. Every adjustment
+    is at most 1.0, so only the floor can bind."""
+    base = BASE_SUCCESS[(case['profile'], case['regimen'])]
+    return max(SUCCESS_FLOOR, base * outcome_modifier(case) * interaction_modifier(case))
+
+
 def profile_quota(n):
     """Case count per profile, largest remainder so the parts sum to n exactly.
     Truncating instead would leave a shortfall that the sampler had to absorb
@@ -289,45 +327,9 @@ class CaseGenerator:
         return self.rng.choices([r for r, _ in options], weights=[w for _, w in options])[0]
 
     def outcome(self, case):
-        if self.rng.random() < self.success_rate(case):
+        if self.rng.random() < success_rate(case):
             return 'success'
         return self.failure_type(case['profile'])
-
-    def success_rate(self, case):
-        """Base rate for the profile and regimen, adjusted downward for risk.
-        Every adjustment is at most 1.0, so only the floor can bind."""
-        base = BASE_SUCCESS[(case['profile'], case['regimen'])]
-        rate = base * self.outcome_modifier(case) * self.interaction_modifier(case)
-        return max(SUCCESS_FLOOR, rate)
-
-    def outcome_modifier(self, case):
-        modifier = 1.0
-        if case['hiv_status'] == 'positive':
-            modifier *= HIV_PENALTY
-        if case['diabetes']:
-            modifier *= DIABETES_PENALTY
-        modifier *= age_penalty(case['age'])
-        if case['previous_treatment']:
-            modifier *= PREV_TX_PENALTY
-        if case['sex'] == 'M':
-            modifier *= MALE_PENALTY
-        return modifier
-
-    def interaction_modifier(self, case):
-        hiv = case['hiv_status'] == 'positive'
-        hiv_age, hiv_age_penalty = HIV_AGE_PENALTY
-        diabetes_age, diabetes_age_penalty = DIABETES_AGE_PENALTY
-
-        modifier = 1.0
-        if hiv and case['diabetes']:
-            modifier *= HIV_DIABETES_PENALTY
-        if hiv and case['age'] > hiv_age:
-            modifier *= hiv_age_penalty
-        if case['previous_treatment'] and case['profile'] in MAJOR_RESISTANCE:
-            modifier *= PREV_TX_MAJOR_PENALTY
-        if case['diabetes'] and case['age'] > diabetes_age:
-            modifier *= diabetes_age_penalty
-        return modifier
 
     def failure_type(self, profile):
         band = 'major' if profile in MAJOR_RESISTANCE else 'minor'
@@ -382,6 +384,16 @@ def regimen_ceiling(profiles=None):
         return 0.0
     total = sum(share * max(regimen_mix(p).values()) for p, share in shares.items())
     return round(total / sum(shares.values()), 3)
+
+
+def marginal_success(case):
+    """Success probability with the year and the regimen marginalized out, which
+    is what a predictor reading only the retrieved features can reach."""
+    mix = regimen_mix(case['profile'])
+    weight = sum(mix.values())
+    if not weight:
+        return 0.0
+    return sum(w * success_rate({**case, 'regimen': r}) for r, w in mix.items()) / weight
 
 
 def case_base(n=DEFAULT_CASES, seed=DEFAULT_SEED):

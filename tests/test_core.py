@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-# Runs from Evaluation/. SRC/ and Evaluation/ are added to the import path so the core modules below resolve.
+# SRC/ and Evaluation/ are added to the import path so the core modules below resolve.
 
 ROOT = Path(__file__).resolve().parent.parent
 for _folder in (ROOT / "SRC", ROOT / "Evaluation"):
@@ -21,8 +21,8 @@ from cbr_cases import case_base
 from cbr_engine import FEATURE_ORDER, CaseRetriever, CBREngine, SimilarityCalculator
 from config import SEVERITY
 from feature_engineering import second_line_coverage
-from metrics import wilson_interval
-from rule_engine import RuleEngine
+from metrics import brier_constant, wilson_interval
+from rule_engine import BPAL_DRUGS, BPALM_DRUGS, DRUG_MONITORING, RuleEngine
 
 
 class FakeOntology:
@@ -84,6 +84,12 @@ def test_monitoring_follows_regimen():
     params = {m["parameter"] for m in out["recommendations"]["monitoring"]}
     assert "ECG monthly" in params   # bedaquiline is in BPaLM
     assert "CBC monthly" in params   # linezolid is in BPaLM
+
+
+def test_every_monitored_drug_is_prescribable():
+    """A monitored drug no regimen carries would be an entry that never fires."""
+    prescribable = set(BPAL_DRUGS) | set(BPALM_DRUGS)
+    assert set(DRUG_MONITORING) <= prescribable
 
 
 def test_backward_treatment_xdr():
@@ -1164,12 +1170,30 @@ def test_age_penalty_takes_the_highest_band_cleared():
 def test_success_rate_never_leaves_the_floor_and_base():
     # Every modifier is a penalty, so the rate can only sit between the floor and
     # the profile-regimen base it starts from.
-    from cbr_cases import BASE_SUCCESS, SUCCESS_FLOOR, CaseGenerator
+    from cbr_cases import BASE_SUCCESS, SUCCESS_FLOOR, success_rate
 
-    generator = CaseGenerator(seed=42)
     for case in case_base(500, seed=42):
-        rate = generator.success_rate(case)
+        rate = success_rate(case)
         assert SUCCESS_FLOOR <= rate <= BASE_SUCCESS[(case["profile"], case["regimen"])]
+
+
+def test_marginal_success_sits_inside_the_regimen_span():
+    """Marginalizing over regimen cannot leave the range the regimens span."""
+    from cbr_cases import REGIMEN_OPTIONS, marginal_success, success_rate
+
+    for case in case_base(200, seed=42):
+        rates = [success_rate({**case, "regimen": r})
+                 for year in REGIMEN_OPTIONS[case["profile"]].values() for r, _ in year]
+        assert min(rates) <= marginal_success(case) <= max(rates)
+
+
+def test_outcome_ceiling_beats_the_reported_probability():
+    """The ceiling reads only the retrieved features, so retrieval cannot pass it."""
+    cases = case_base(validation.N_CASES, seed=validation.SEED)
+    ceiling = validation.outcome_ceiling(cases)
+    assert 0.5 < ceiling["auc"] <= 1.0
+    assert ceiling["brier"] < brier_constant(
+        [(0.0, c["outcome"] == "success") for c in cases])
 
 
 def test_retrieval_score_never_goes_negative():

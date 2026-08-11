@@ -21,6 +21,13 @@ DRUG_CLASSES = {f'{label}_resistance': (label, sorted(members - CLASS_LABELS))
 
 CLASS_SEVERITY = {'MDR': 1, 'PreXDR': 2, 'XDR': 3}
 
+# Monitoring follows regimen composition rather than a rule firing, so an entry
+# names no rule.
+DRUG_MONITORING = {
+    'bedaquiline': ('ECG monthly', 'QTc >500ms'),
+    'linezolid': ('CBC monthly', 'myelosuppression'),
+}
+
 # Conditions naming a classification read the flag the classifier set.
 CLASSIFICATION_GOALS = ('mdr', 'xdr', 'prexdr')
 
@@ -321,17 +328,11 @@ class RuleEngine:
             'drug': value, 'rationale': rule.actions.get('rationale'), 'rule': rule.id})
 
     def regimen_monitoring(self, recommendations):
+        """Monitoring for the drugs the selected regimen carries."""
         drugs = {d for r in recommendations['regimens'] for d in r.get('drugs', [])}
-        schedule = [
-            ('bedaquiline', 'ECG monthly', 'QTc >500ms', 'TS011'),
-            ('linezolid', 'CBC monthly', 'myelosuppression', 'TS005'),
-            ('pyrazinamide', 'LFTs monthly', 'ALT >3x ULN', 'TS010')
-        ]
-        existing = {m['parameter'] for m in recommendations['monitoring']}
-        for drug, parameter, threshold, rule_id in schedule:
-            if drug in drugs and parameter not in existing:
-                recommendations['monitoring'].append(
-                    {'parameter': parameter, 'threshold': threshold, 'rule': rule_id})
+        recommendations['monitoring'] = [
+            {'parameter': parameter, 'threshold': threshold}
+            for drug, (parameter, threshold) in DRUG_MONITORING.items() if drug in drugs]
 
     def canonical_gene_fraction(self, mutations):
         # Reads gene membership only, not the WHO grading tier. Deduped, because one

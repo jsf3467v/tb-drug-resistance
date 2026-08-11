@@ -48,33 +48,19 @@ The Case-Based Reasoning tab answers the same question from prior similar cases 
 
 ### Running the demo
 
-After installing the dependencies and setting the environment (see [DEPLOYME.md](DEPLOYME.md)), bring the system up in this order.
+Full setup is in [DEPLOYME.md](DEPLOYME.md). The short version, once dependencies and the
+environment are in place, is three commands.
 
-1. Start a local Memgraph instance in Docker and leave it running in the background. If the container already exists from an earlier run, resume it with `docker start memgraph` instead.
+```bash
+docker run -d -p 7687:7687 -p 7444:7444 --name memgraph memgraph/memgraph-mage:3.9.0
+python SRC/tb_ontology.py
+streamlit run SRC/app.py
+```
 
-    ```bash
-    docker run -d -p 7687:7687 -p 7444:7444 --name memgraph memgraph/memgraph-mage:3.9.0
-    ```
-
-2. Build the knowledge graph. This clears the database, applies the schema, loads the seed strains and patients, and merges the WHO catalog, then prints `Database initialized successfully`.
-
-    ```bash
-    python SRC/tb_ontology.py
-    ```
-
-3. Launch the application.
-
-    ```bash
-    streamlit run SRC/app.py
-    ```
-
-4. Paste an Anthropic API key into the sidebar, since the natural-language layer calls the Anthropic API to turn questions into Cypher.
-
-5. Click Initialize CBR in the sidebar to load the 1,000 synthetic cases. The control reads `Active with 1000 cases` once the case base is ready.
-
-6. Ask a question such as "What treatment should patient P003 receive" and read the result across the four tabs.
-
-The seed strains and patients load whether or not the large datasets are present, so the demo runs on the seed graph alone. The WHO catalog merge in step 2 is skipped with a printed note when the catalog file is absent.
+Paste an Anthropic API key into the sidebar, click Initialize CBR to load the 1,000
+synthetic cases, then ask a question such as "What treatment should patient P003 receive".
+The seed strains and patients load whether or not the large datasets are present, so the
+demo runs on the seed graph alone.
 
 ## Architecture
 
@@ -94,100 +80,33 @@ The figure below follows a single strain through the graph, from its mutations t
 
 ## Results
 
-### Real-world validation of the rule engine
+Every figure below is reproduced by the commands in [DEPLOYME.md](DEPLOYME.md) section 6 and
+written to `Evaluation/validation_results.json`. Full scoring for each arm, with the
+per-tier and per-drug breakdowns, sits in [EVALUATION.md](EVALUATION.md).
 
-The rule engine was validated on all 65,588 CRyPTIC isolates carrying a measured drug-susceptibility phenotype. Both arms read the EFFECTS and PREDICTIONS tables directly. The knowledge graph holds the same catalog in a second representation but does not appear in any figure reported here, as it serves the seed strains and the natural-language interface instead.
+| Arm | Measure | Score | Floor | Ceiling |
+| --- | --- | ---: | ---: | ---: |
+| Tier classification | accuracy against phenotype | 83.4% | 73.3% majority | 83.5% catalog |
+| Tier classification | balanced accuracy | 67.4% | 25.0% | 67.9% catalog |
+| Regimen retrieval | exact match | 77.2% | 79.3% majority | 79.8% |
+| Outcome probability | area under the curve | 0.562 | 0.500 | 0.668 |
+| Query translation | execution match | 90.9% | | |
 
-The engine reproduces the WHO genotypic catalog on 99.8% of isolates. That figure is closer to definitional than to independent evidence, since both arms grade the same variants against the same catalog and apply the same tier definitions. The remaining 0.2% difference arises because one method reads from the EFFECTS table and the other from PREDICTIONS. Both tables contain precomputed catalog verdicts and differ mainly in detail. The EFFECTS table provides a per-variant grade that the engine then aggregates into a drug-level call, while PREDICTIONS already includes that aggregation. Therefore, the engine's contribution here is limited to the aggregation process, not the resistance grading or tier definitions, which are consistent across both methods. The whole-class cross-resistance affects only the exclusion list and does not influence the classifier's core facts, so it appears only in the per-drug analysis. When measured against phenotype, the engine achieves 83.4% overall accuracy, while the catalog reaches 83.5%.
+Two of those rows carry a measured ceiling rather than a perfect one, and the pair is the
+most useful thing in the table. The regimen ceiling of 79.8% sits half a point above the
+score and above the majority baseline, so that layer is bounded by the synthetic cohort.
+The outcome ceiling of 0.668 sits far above the score, so that layer is bounded by the
+neighborhood weighting instead. The same calculation separates them, and
+[EVALUATION.md](EVALUATION.md) sets out both.
 
-Relying solely on accuracy can be misleading for an imbalanced dataset, as below-MDR cases comprise 73.3% of isolates. A model that always predicts below-MDR would achieve this proportion without actual reasoning. Balanced accuracy, which averages the per-tier sensitivities, is 67.4% for the engine and 67.9% for the catalog, with macro-F1 scores of 0.662 and 0.665, respectively. Sensitivity drops from 91.6% for below-MDR to 61.9% for MDR, 61.5% for pre-XDR, and 54.7% for XDR, while specificity remains above 94% across all resistance tiers.
+Three limits shape every number above. Sensitivity is capped at 79.7% because 3,562 of the
+17,523 isolates measured at MDR or higher carry no mutation the catalog grades. Precision
+on the top two tiers is held down because only 59.0% of the cohort was tested for both a
+fluoroquinolone and an injectable, and the label reads an untested drug as susceptible.
+The regimen layer is scored by exact match to a labeled regimen, which penalizes it for
+optimizing treatment outcome instead. Limitations gives the full account.
 
 ![Grouped bar chart of per-tier sensitivity against measured phenotype, rule engine versus WHO catalog, across below-MDR, MDR, pre-XDR, and XDR. The two systems are within a point of each other on every tier, and sensitivity declines from 92% on below-MDR to 55% on XDR as the tiers grow rarer.](assets/cryptic_tier_sensitivity.png)
-
-The bars illustrate the results. The engine reaches almost the same sensitivity per tier as the catalog it encodes, suggesting that most of the remaining potential is in the catalog and data rather than the implementation. The two arms assign different labels to 124 isolates throughout the cohort. Among the 17,523 isolates labeled as resistant truth, they disagree on 105 cases; most other disagreements happen on isolates both arms mislabel, but under different names.
-
-| Of 17,523 resistant isolates | Isolates | Share | What it is |
-| --- | ---: | ---: | --- |
-| Both correct | 10,646 | 60.8% | engine and catalog both right |
-| Both wrong | 6,772 | 38.6% | both arms assign a tier and both are wrong |
-| Engine only wrong | 98 | 0.6% | 80 coverage gaps and 18 one-tier over-calls |
-| Catalog only wrong | 7 | 0.04% | resistance the catalog misses and the engine catches |
-
-The 6,772 cover two different failures. The first is resistance the genotype does not show, which no method can reach. The engine places 4,314 isolates with resistant truth below MDR, and 3,562 of those carry no graded mutation at all. That count spans the whole cohort rather than this one row, since 80 of the 4,314 are isolates the catalog places correctly and so belong to the engine-only row above. The second failure is isolates that both arms call resistant and both assign to the wrong tier, which is a limit of the tiering rather than of the catalog.
-
-A paired McNemar test over the resistant-truth isolates gives $\chi^2 = 77.1$ and $p \approx 1.6 \times 10^{-18}$, with 98 falling on the engine side. That number overstates the difference. The engine reads EFFECTS while the catalog arm reads PREDICTIONS, and 97 isolates carry a catalog call above below-MDR with no graded mutation reaching the engine at all. Eighty of the 97 are placed correctly by the catalog, which accounts for most of the 98. The other 17 are isolates that both arms misclassify. Restricting the comparison to isolates the engine actually received yields 18 against 7, with $\chi^2 = 4.0$ and $p = 0.046$. The difference is real and far smaller than the pooled figure suggests. The test conditions on resistant truth, so it reads 105 of the 124 total disagreements. The gap of 91 isolates between 98 and 7 is the same gap that separates the two overall accuracy figures, because the disagreements the test sets aside fall on isolates where both arms score wrong. Every one of the 18 is an isolate the engine placed one tier too high, 13 raising MDR to pre-XDR and 5 raising pre-XDR to XDR. All 18 carry a kanamycin call graded in EFFECTS and 17 carry amikacin as well. So these are the same table gap surfacing as a one-tier bump rather than a total miss. The tier definition is not the cause, since the label and the classification rules read the same drug-class sets from config.
-
-### What bounds precision
-
-The tier label reads an untested drug as susceptible. Pre-XDR and XDR are separated from MDR by fluoroquinolone and injectable results, and 38,674 isolates carry a result for both, which is 59.0% of the cohort. An isolate never tested on either class is capped at MDR by its label however resistant its genotype is, so a correct genotypic call above MDR is scored a false positive on an isolate that was never measured.
-
-Scoring the same tiers on the isolates that were measured separates the two readings.
-
-| Tier | Precision, full cohort | Precision, tested | Resistant, full | Resistant, tested |
-| --- | ---: | ---: | ---: | ---: |
-| MDR | 0.758 | 0.852 | 10,335 | 8,491 |
-| pre-XDR | 0.483 | 0.616 | 4,725 | 4,605 |
-| XDR | 0.482 | 0.629 | 2,463 | 2,463 |
-
-The macro-F1 increases from 0.662 to 0.708 for the engine and from 0.665 to 0.712 for the catalog, and balanced accuracy from 67.4% to 68.9% and from 67.9% to 69.4%. Overall accuracy falls from 83.4% to 80.8%, because the restriction removes mostly below-MDR isolates and leaves a harder mix behind.
-
-The increase results mainly from removing false positives, not hard positives. An isolate cannot be labeled XDR without results for both classes, so the restriction cannot eliminate an XDR isolate. Its count stays at 2,463 and sensitivity remains at 54.7% by design, with only the 14.7 percentage point increase in precision conveying new information. Pre-XDR provides the evidence, as it retains 4,605 of 4,725 isolates, loses 53 correct calls, and gains 13.3 points of precision. Removing the 26,914 untested isolates thus reduces false positives in the top tiers with minimal loss of correct calls.
-
-The per-drug arm did not include this because it scores only drugs with results for the relevant isolates. The tier arm now records both readings, with the restricted one labeled under `second_line_covered`.
-
-### What bounds sensitivity
-
-Sensitivity should be read against what the input permits rather than against a perfect 100%. The engine recognizes only mutations the catalog grades as resistance-conferring, so an isolate carrying none of them arrives with an empty genotype and falls below the MDR threshold, whatever its phenotype. Of the 17,523 isolates measured at MDR or above, 3,562 carry no graded mutation, which puts the upper limit on sensitivity at 79.7%. The limit differs by tier, at 81.7% for MDR, 81.1% for pre-XDR, and 68.4% for XDR. Against those limits, the engine finds 75.8% of what is available at MDR, 75.8% at pre-XDR, and 80.0% at XDR. The raw figures fall as the tiers grow more resistant while the reachable share does not, though the four-point spread rests on 2,463 isolates and carries no interval, so it is a direction rather than a result.
-
-### Per-drug resistance calls
-
-Each drug is evaluated individually against the measured phenotype, using the WHO catalog as the reference. Calculations are based on isolates with results for each drug, ranging from 19,948 for capreomycin to 59,869 for rifampin, so each row shows its own denominator alongside the resistant count, instead of the 65,588 total in the header. The macro-F1 score is 0.588 for the engine and 0.611 for the catalog across the 15 drugs. Since both reference arms assess the same isolates per drug, the comparison uses a paired McNemar test rather than separate confidence intervals. Twelve out of 15 drugs show no discordant isolates, including both fluoroquinolones, since the catalog already grades levofloxacin and moxifloxacin from the same call on the DNA gyrase subunit A gene (gyrA), so the class expansion adds nothing there. These twelve drugs align on an isolate-by-isolate level rather than just overall.
-
-The main distinction lies in the three injectables. The engine considers amikacin, kanamycin, and capreomycin as a single class, so a mutation affecting any one of them results in resistance to all three. In practice, cross-resistance among these injectables is only partial, making the trade-off generally disadvantageous. The precision on amikacin falls from 0.834 to 0.518 and on capreomycin from 0.776 to 0.439, against sensitivity gains of 2.2 and 4.2 percentage points. F1 falls on all three. The paired test puts the discordance at 1,524 isolates for amikacin with $\chi^2 = 1280.6$, 1,343 for capreomycin with $\chi^2 = 1061.5$, and 149 for kanamycin with $\chi^2 = 116.9$, each at $p < 10^{-26}$. Read the ratios rather than the p-values. Because the engine calls a strict superset of the catalog, the test asks only whether the added calls are more often wrong than right, and at these cohort sizes the p-value reflects the denominator. The three tests are also driven by the same mutations in the same isolates, falling in the 16S ribosomal RNA gene, written rrs, and the enhanced intracellular survival gene, written eis, so they are one finding measured three ways rather than three confirmations.
-
-The behavior is documented as a quantifiable characteristic of the heuristic, rather than an implicit assumption. The score assigned to the arm does not directly reflect the rule's intent, as the expansion only adds entries to the exclusion list. Its goal is to prevent a likely-failing drug from being included in a regimen, rather than to predict a phenotype. The scoring runs through `python Evaluation/metrics.py`, which writes `Evaluation/per_drug_results.json`.
-
-### Expert system
-
-The natural-language layer is assessed through execution match, pairing each question with a gold query. A generated query is deemed correct if it produces the same result set. On claude-sonnet-4-6, the latest run answered ten out of eleven questions, achieving a correctness rate of 90.9%, with a Wilson interval of 62.3% to 98.4%. It is better to interpret the interval instead of the single-point estimate, as eleven questions are insufficient to draw conclusions about translation quality in either direction.
-
-Only nine questions are scored this way. The remaining two require information that the graph cannot provide and are scored on refusal, which passes when the generated text either states the question is unanswerable or fails the read-only guard. An explicit refusal and an attempted write count alike, and the result file notes the generated query only when an item fails, so the two passing refusals leave no trace for review.
-
-Generation runs at temperature zero, which does not make the arm reproducible. Four runs returned ten of eleven three times and eleven of eleven once. Every failing run failed the same lookup, where the query collects a relationship property without binding the relationship. Memgraph rejects it as an unbound variable. One unstable question describes the arm better than a drifting score, and an invalid query is a better failure than a plausible wrong answer.
-
-The test suite verifies the deterministic components of the layer, including the read-only guard, routing, and normalization (which removes order clauses the database cannot satisfy after an aggregate but retains them when a LIMIT depends on it).
-
-### Case-based reasoning, the experimental component
-
-Regimen accuracy is 77.2%, with a bootstrap interval from 74.5% to 79.8%. It is slightly below the majority-class baseline of 79.3% and near the ceiling of 79.8%. The ceiling marginalizes the year, since the generator selects the regimen from profile and year while the year is independent of every feature retrieval matches on. Outcome accuracy stands at 74.8%, marginally above its baseline of 74.6%.
-
-The engine refrains from assigning a regimen when none of the retrieved neighbors provide a suitable option supported by at least two neighbors. This occurred six times in a thousand, leading to a coverage rate of 99.4%. An abstention indicates no regimen is assigned and is viewed as an error, making these figures conservative estimates. When selecting the most common regimen among the retrieved neighbors, regardless of outcome, the accuracy is 76.8%, with a confidence interval from 74.2% to 79.5%. This suggests that outcome weighting has minimal influence and that the main limitation arises from the retrieval neighborhood rather than the scoring method.
-
-The overall summary hides the main challenge. Susceptible and MonoResistant cases each correspond to a single regimen and constitute 62% of the cohort. Consequently, a predictor identifying their profile nearly always succeeds, with 618 out of 620 cases correctly classified. For the remaining 38% with multiple options, the baseline accuracy is 45.5%, the retrieval score is 40.5%, and the upper limit reaches 46.9%. The model performs well on straightforward cases but faces difficulties with more complex ones. The baseline falls within the bootstrap interval for the entire cohort, and a smaller subset of 380 cases shows a slight gap that is a point estimate rather than a statistically significant difference.
-
-| Profile | Regimen accuracy | n |
-| --- | ---: | ---: |
-| Susceptible | 100.0% | 500 |
-| MonoResistant | 98.3% | 120 |
-| PolyResistant | 45.0% | 60 |
-| MDR | 35.0% | 180 |
-| PreXDR | 56.2% | 80 |
-| XDR | 31.7% | 60 |
-
-Retrieval crosses resistance profiles on 15.4% of neighbors, because the profile carries a weight of 0.32 against an ordinal similarity where an adjacent tier still scores 0.8. A neighbor one tier away loses 0.064, while a case with the same profile but a different treatment history, HIV status, and region loses 0.41, since a region mismatch keeps half its weight instead of losing all of it. Boundary crossings are therefore common. Compared with the per-profile baseline on identical folds, retrieval wins 59 cases and loses 80, which is 139 discordant cases at $p = 0.090$.
-
-The generator draws the regimen from the profile and the year. The year never enters the query, so retrieval cannot match on it, although the ranking does discount older cases and that discount is worth 0.4 points of regimen accuracy. What retrieval can reach on this cohort is therefore bounded by the per-profile lookup, whatever weights it carries. The limit belongs to the synthetic cases rather than to the weighting, so a weaker score here is not on its own an argument for retuning.
-
-### Calibration
-
-The predicted probability represents the proportion of the ten retrieved neighbors that succeeded, smoothed by adding one success and one failure. This smoothing is important. Without it, a raw share would be exactly one if all ten neighbors succeeded, which occurred in 77 of the 1,000 cases. In those cases the logit that both scaling methods fit is unbounded, and these few scores could otherwise drive the fit on their own.
-
-The expected calibration error for the smoothed probability is 0.0942, and the Brier score is 0.1951. A constant prediction based on the base rate achieves a score of 0.1895, outperforming it. This constant is fitted to the outcomes it predicts, making it the most robust baseline of its kind and serving as a conservative point of comparison.
-
-Temperature scaling averages at 1.113, with fold values from 1.05 to 1.238, but it increases the calibration error from 0.0942 to 0.103, indicating an issue with direction rather than spread. The middle bins are under-confident, with accuracy above their stated probabilities, while the top two bins are over-confident. A single parameter dividing the logit shifts every score the same way and cannot answer both. Platt scaling introduces an intercept, adjusts slopes from 0.252 to 0.517, and reduces the calibration error to 0.018, with a Brier score of 0.1891. Both methods are trained on four folds and applied to the held-out fold, ensuring no data leakage.
-
-This improvement does not prove the outcome layer is effective. Slopes well below one reduce the score toward the base rate, and most of the apparent gain results from this shrinkage rather than actual added signal. Since neither scaling alters the ranking, the area under the curve of 0.562 reflects the true signal, which is just above chance. The Platt Brier score surpasses the constant by 0.0004, and the outcome accuracy of 74.8%, with a confidence interval from 72.1% to 77.4%, includes the 74.6% baseline. The predicted probability offers little insight into treatment success, and presenting the fitted slope alongside the calibration error keeps this point clear.
-
 
 ## Data
 
@@ -205,37 +124,31 @@ The release also ships `DATA_SCHEMA.pdf`, which documents the full set of tables
 
 ## Evaluation
 
-All scoring runs through a single entry point.
+Scoring runs through two entry points, both detailed in [DEPLOYME.md](DEPLOYME.md) section 6.
 
 ```bash
-python Evaluation/validation.py
+python Evaluation/validation.py   # tier, expert-system, and case-based arms
+python Evaluation/metrics.py      # per-drug scoring
+pytest tests/test_core.py         # 127 tests, no database, API, or datasets
 ```
 
-This clears and rebuilds the knowledge graph, then runs the expert-system and case-based reasoning validation against it. If the database or API is unavailable, it omits that part and prints a note. The next step then performs the database-free CRyPTIC classification validation. Because it clears the graph first, run it before the demo rather than after, since it discards any case base the app has loaded.
+Every metric comes from `Evaluation/metrics.py`, so the tier arm and the per-drug arm
+measure the same quantities. The reference arm differs between them. The tier arm reads
+the catalog profile from `PREDICTIONS.parquet` and the per-drug arm reads it from
+`EFFECTS.parquet`, so both of its columns come from one table. Compare within an arm
+rather than across the two files.
 
-Results are written to `Evaluation/validation_results.json`, replacing the committed reference run. A skipped arm keeps its previous result rather than being erased, and an `arms_this_run` field records which sections were actually recomputed.
+The CRyPTIC, per-drug, and case-based arms are deterministic under a fixed seed of 42, and
+repeated runs reproduce every digit in the two result files apart from the last decimal
+place of one p-value, which moves with floating-point summation order. The expert-system
+arm calls a live model and is the one figure expected to change, so it is reported beside
+the model that generated it. Four runs returned ten of eleven three times and eleven of
+eleven once.
 
-The per-drug resistance scoring operates independently and writes `Evaluation/per_drug_results.json`.
-
-```bash
-python Evaluation/metrics.py
-```
-
-The shared scoring functions, such as sensitivity, specificity, precision, F1, balanced accuracy, macro-F1, the McNemar test, and the Brier score, are located in `Evaluation/metrics.py`. This ensures that the tier scoring in `validation.py` and the per-drug scoring measure the same metrics consistently. However, the reference arm differs between the two; the tier arm fetches the catalog profile from `PREDICTIONS.parquet`, while the per-drug arm retrieves it from `EFFECTS.parquet` so that both columns come from one table. It is advisable to compare within the same arm rather than across different files.
-
-A standalone deterministic test suite with 124 tests verifies rule-engine classification, calibration calculations, the read-only query guard and routing, generator determinism, seed-graph integrity, and consistency between the two inference modes. It operates without needing a database, API, or datasets and runs from the project root.
-
-```bash
-pytest tests/test_core.py
-```
-
-The same suite executes in continuous integration for every push to `main` and each pull request, covering Python versions 3.10, 3.11, and 3.12.
-
-### Reproducing
-
-The project builds up in three levels, each adding to the previous one. The test suite only requires running `pip install -r requirements-dev.txt` and includes 124 tests that verify the rule engine, calibration calculations, query guard, and seed-graph integrity. Incorporating Docker and an Anthropic API key activates the demo and the expert-system component on the seed graph, all without downloading any datasets. Including the `Datasets/` folder enables access to the CRyPTIC data and per-drug metrics mentioned earlier.
-
-The CRyPTIC, per-drug, and case-based arms are deterministic, seeded at 42. Repeated runs consistently reproduce every digit in the two result files, with only the last decimal place of one p-value varying due to differences in floating-point summation order. The expert-system arm calls a live model, and four runs yielded ten out of eleven three times and eleven out of eleven once; this is the only figure expected to change and is reported alongside its generating model. The full procedure is detailed in [DEPLOYME.md](DEPLOYME.md).
+The project builds up in three levels. The test suite needs only
+`pip install -r requirements-dev.txt`. Adding Docker and an Anthropic API key activates the
+demo and the expert-system arm on the seed graph, with no datasets downloaded. Adding the
+`Datasets/` folder unlocks the CRyPTIC and per-drug arms.
 
 ### Exploratory analysis
 
@@ -291,7 +204,7 @@ Several directions would extend the work, and they fall into two groups, the dat
 
 The most significant data gap is the synthetic case base. Validating the case-based layer with the TB Portals dataset, which includes actual treatment outcomes, would replace the cohort where real signals are most needed. Real data would strengthen the result without necessarily raising the accuracy, since resistant cases stay rare even in large collections. A trained model could push the results toward the other ceiling. Training such a model with the full genome-wide variant table and the minimum inhibitory concentration magnitudes would explore how much of the genotype-phenotype mismatch can be explained beyond the curated catalog.
 
-The remaining directions concern how the system is evaluated and how it handles rare classes. The regimen layer is scored by exact match to the labeled regimen, which penalizes it for optimizing treatment outcome and guideline adherence instead, so part of the measured shortfall is a metric mismatch rather than a modeling error. Scoring against outcome directly is the simplest of these changes, since it needs no additional data and fixes the mismatch at its source. Confidence-gated deferral would extend the abstention the engine already performs when its neighbors carry nothing applicable. A sparse neighborhood would hand the case to the rule engine, and the arm would report coverage beside accuracy, which turns rare-class scarcity into calibrated behavior rather than silent error.
+The remaining directions concern how the system is evaluated and how it handles rare classes. The regimen layer is scored by exact match to the labeled regimen, which penalizes it for optimizing treatment outcome and guideline adherence instead, so part of the measured shortfall is a metric mismatch rather than a modeling error. Scoring against outcome directly is the simplest of these changes, since it needs no additional data and fixes the mismatch at its source. The outcome layer now carries a measured ceiling, and the gap beneath it is wide enough to make the similarity weights the first thing to tune, scored against that ceiling rather than against a perfect one. Confidence-gated deferral would extend the abstention the engine already performs when its neighbors carry nothing applicable. A sparse neighborhood would hand the case to the rule engine, and the arm would report coverage beside accuracy, which turns rare-class scarcity into calibrated behavior rather than silent error.
 
 The whole-class injectable rule groups amikacin, kanamycin, and capreomycin together, and the per-drug scoring shows it over-calls all three against measured phenotype. The cost falls almost entirely on two of them. Amikacin and capreomycin lose 31.7 and 33.7 points of precision for gains of 2.2 and 4.2 in sensitivity, while kanamycin loses 3.9 for a gain of 0.2. That asymmetry is what the expansion would produce if kanamycin, the most frequently resistant of the three, is mainly the source of the added calls rather than their recipient. Tying cross-resistance to the gene instead, with rrs conferring resistance across the class and eis favoring kanamycin, would recover precision without moving any tier, since the class rule writes only into the exclusion list and never into the facts the classifier reads.
 
