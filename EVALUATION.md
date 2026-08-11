@@ -82,11 +82,11 @@ The behavior is documented as a measured property of the heuristic rather than a
 
 ## Query translation
 
-The natural-language layer is scored by execution match against a gold query, where a generated query passes if it returns the same result set. On claude-sonnet-4-6, the latest run answered ten of eleven questions for 90.9 percent, with a Wilson interval of 62.3 to 98.4 percent. Read the interval rather than the point estimate, since eleven questions cannot support a conclusion about translation quality in either direction.
+The natural-language layer is scored by execution match against a gold query, where a generated query passes if it returns the same result set. On claude-sonnet-4-6, the reported run answered ten of eleven questions for 90.9 percent, with a Wilson interval of 62.3 to 98.4 percent. Read the interval rather than the point estimate, since eleven questions cannot support a conclusion about translation quality in either direction.
 
 Only nine questions are scored by execution match. The remaining two cannot be answered by a read query, one because it requests a write and one because it asks for a field the graph does not hold. Both are scored on refusal, which passes when the generated text either declares the question unanswerable or fails the read-only guard. An explicit refusal and an attempted write count alike, and the result file records the generated query only on failure, so the two passing refusals leave no trace for review.
 
-Generation runs at temperature zero, which does not make the arm reproducible. Six runs returned ten of eleven four times and eleven of eleven twice. Every failing run failed the same lookup, where the query collects a relationship property without binding the relationship and Memgraph rejects it as an unbound variable. One unstable question describes the arm better than a drifting score would, and an invalid query is a better failure than a plausible wrong answer.
+Generation runs at temperature zero, which does not make the arm reproducible. Seven runs returned ten of eleven four times and eleven of eleven three times. Every failing run failed the same lookup, where the query collects a relationship property without binding the relationship and Memgraph rejects it as an unbound variable. One unstable question describes the arm better than a drifting score would, and an invalid query is a better failure than a plausible wrong answer.
 
 The test suite covers the deterministic parts of the layer, including the read-only guard, routing, and normalization, which removes order clauses the database cannot satisfy after an aggregate while keeping them where a limit depends on the order.
 

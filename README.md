@@ -115,7 +115,7 @@ pytest tests/test_core.py         # 125 tests, no database, API, or datasets
 
 Every scoring primitive comes from `Evaluation/metrics.py`, so the tier arm and the per-drug arm measure the same quantities. The reference arm differs between them. The tier arm reads the catalog profile from `PREDICTIONS.parquet` and the per-drug arm reads it from `EFFECTS.parquet`, so both of its columns come from one table. Compare within an arm rather than across the two files.
 
-The CRyPTIC, per-drug, and case-based arms are deterministic under a fixed seed of 42, and repeated runs reproduce every digit in the two result files, apart from the last decimal place of one p-value on some hardware, which moves with floating-point summation order. The expert-system arm calls a live model and is the one figure expected to change, so it is reported beside the model that generated it. Six runs returned ten of eleven four times and eleven of eleven twice.
+The CRyPTIC, per-drug, and case-based arms are deterministic under a fixed seed of 42, and repeated runs reproduce every digit in the two result files, apart from the last decimal place of one p-value on some hardware, which moves with floating-point summation order. The expert-system arm calls a live model and is the one figure expected to change, so it is reported beside the model that generated it. Seven runs returned ten of eleven four times and eleven of eleven three times.
 
 The project builds up in three levels. The test suite needs only `pip install -r requirements-dev.txt`. Adding Docker and an Anthropic API key activates the demo and the expert-system arm on the seed graph, with no datasets downloaded. Adding the `Datasets/` folder unlocks the CRyPTIC and per-drug arms.
 
