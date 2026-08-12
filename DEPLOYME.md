@@ -116,11 +116,11 @@ python Evaluation/validation.py     # rebuilds the graph, calls the API
 
 The first two write nothing and exist to fail early. The next two need neither the database nor the API, so a failure in either is a data problem rather than an infrastructure one. Only the last step rebuilds the graph and spends API calls.
 
-Run `python Evaluation/validation.py --fresh` the first time, or after editing the schema or the prompt examples. The expert arm journals its progress so an interrupted run can resume, and the journal carries a digest of the model together with the schema and the examples, so editing any of them discards results produced under the old prompt rather than resuming on top of them. A journal file left on disk means the last run did not finish.
+Run `python Evaluation/validation.py --fresh` the first time, or after editing the schema or the prompt examples. The expert-system scoring arm journals its progress so an interrupted run can resume, and the journal carries a digest of the model together with the schema and the examples, so editing any of them discards results produced under the old prompt rather than resuming on top of them. A journal file left on disk means the last run did not finish.
 
 Because section 6.2 clears the graph, run it before section 7 rather than after. It discards anything the running application loaded, including the case base.
 
-Both scoring scripts resolve their output against their own location rather than the working directory, so they write `Evaluation/validation_results.json` and `Evaluation/per_drug_results.json` no matter where you launch them from, replacing the committed reference copies. The validation report merges rather than overwrites, so an arm that was skipped keeps its previous result, and an `arms_this_run` field records which sections were recomputed. Back up the two files before a rerun if you want the originals kept. The expert-system arm calls a live model and is the one figure that moves between runs.
+Both scoring scripts resolve their output against their own location rather than the working directory, so they write `Evaluation/validation_results.json` and `Evaluation/per_drug_results.json` no matter where you launch them from, replacing the committed reference copies. The validation report merges rather than overwrites, so a scoring arm that was skipped keeps its previous result, and an `arms_this_run` field records which sections were recomputed. Back up the two files before a rerun if you want the originals kept. The expert-system scoring arm calls a live model and is the one figure that moves between runs.
 
 ## 7. Run the application
 
@@ -152,8 +152,8 @@ docker rm memgraph       # remove once stopped
 
 - If the application cannot reach the database, confirm the container maps port 7687 and that `NEO4J_URI` points to `bolt://localhost:7687`.
 - If Memgraph fails to start, check the `vm.max_map_count` setting described in the Memgraph system configuration guide.
-- If the expert-system arm of the validation is skipped, the API key is missing or unreachable. The CRyPTIC classification arm still runs and writes its results.
+- If the expert-system scoring arm of the validation is skipped, the API key is missing or unreachable. The CRyPTIC classification scoring arm still runs and writes its results.
 - If the scores do not move after you replace a dataset, check that the replacement carries a newer modification time than `Datasets/cryptic_features.parquet`. Copying a file can preserve the original timestamp, which is the one case the cache cannot see. Delete the cache and run again.
 - If `pytest` is not found, install it as shown in section 3. It is not a runtime dependency.
-- If the expert arm re-queries when you expected it to resume, the schema or the prompt examples changed since the journal was written, so the results produced under the old prompt were discarded rather than mixed with new ones.
+- If the expert-system scoring arm re-queries when you expected it to resume, the schema or the prompt examples changed since the journal was written, so the results produced under the old prompt were discarded rather than mixed with new ones.
 - If the application reports no cases after a scoring run, section 6.2 cleared the graph. Click Initialize CBR again to reload them.

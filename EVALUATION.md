@@ -1,6 +1,6 @@
 # Evaluation detail
 
-Full scoring for every arm. The [README](README.md) carries the headline figures and the
+Full scoring for every scoring arm. The [README](README.md) carries the headline figures and the
 design rationale. Numbers here come from `Evaluation/validation_results.json` and
 `Evaluation/per_drug_results.json`, both written by the commands in
 [DEPLOYME.md](DEPLOYME.md) section 6.
@@ -17,7 +17,7 @@ design rationale. Numbers here come from `Evaluation/validation_results.json` an
 
 ## Real-world validation of the rule engine
 
-The rule engine was validated on all 65,588 CRyPTIC isolates carrying a measured drug-susceptibility phenotype. Both arms read the EFFECTS and PREDICTIONS tables directly. The knowledge graph holds the same catalog in a second representation but appears in no figure here, since it serves the seed strains and the natural-language interface instead.
+The rule engine was validated on all 65,588 CRyPTIC isolates carrying a measured drug-susceptibility phenotype. Both comparison arms read the EFFECTS and PREDICTIONS tables directly. The knowledge graph holds the same catalog in a second representation but appears in no figure here, since it serves the seed strains and the natural-language interface instead.
 
 The engine reproduces the WHO genotypic catalog on 99.8 percent of isolates. That figure is closer to definitional than to independent evidence, since both arms grade the same variants against the same catalog and apply the same tier definitions. The remaining 0.2 percent arises because one method reads EFFECTS and the other PREDICTIONS. Both tables carry precomputed catalog verdicts and differ mainly in detail, since EFFECTS supplies a per-variant grade that the engine aggregates into a drug-level call while PREDICTIONS already includes that aggregation. The engine's contribution here is therefore the aggregation alone, not the grading or the tier definitions. Whole-class cross-resistance writes only into the exclusion list and never into the classifier's facts, so it appears only in the per-drug analysis.
 
@@ -27,7 +27,7 @@ Measured against phenotype, the engine reaches 83.4 percent overall accuracy and
 
 The engine reaches almost the same sensitivity per tier as the catalog it encodes, which suggests most of the remaining headroom lies in the catalog and the data rather than in the implementation.
 
-The two arms assign different labels to 124 isolates across the cohort, and 123 of those carry resistant truth. On 105 of the 123 the arms also differ in which one is correct, and that smaller count is what the paired test reads. The other 18 are isolates both arms mislabel under different names.
+The two comparison arms assign different labels to 124 isolates across the cohort, and 123 of those carry resistant truth. On 105 of the 123 the arms also differ in which one is correct, and that smaller count is what the paired test reads. The other 18 are isolates both arms mislabel under different names.
 
 | Of 17,523 resistant isolates | Isolates | Share | What it is |
 | --- | ---: | ---: | --- |
@@ -58,7 +58,7 @@ Macro-F1 rises from 0.662 to 0.708 for the engine and from 0.665 to 0.712 for th
 
 The gain comes from removing false positives rather than hard positives. No isolate can be labeled XDR without results for both classes, so the restriction cannot remove an XDR isolate. Its count stays at 2,463 and its sensitivity at 54.7 percent by design, with only the 14.7 point rise in precision carrying new information. Pre-XDR supplies the evidence, retaining 4,605 of 4,725 isolates, losing 53 correct calls, and gaining 13.3 points of precision. Removing the 26,914 untested isolates therefore cuts false positives in the top tiers at little cost in correct calls. The restricted reading is written under `second_line_covered`.
 
-The per-drug arm carries no equivalent, since it already scores each drug only on the isolates tested for it.
+The per-drug scoring arm carries no equivalent, since it already scores each drug only on the isolates tested for it.
 
 ## What bounds sensitivity
 
@@ -86,7 +86,7 @@ The natural-language layer is scored by execution match against a gold query, wh
 
 Only nine questions are scored by execution match. The remaining two cannot be answered by a read query, one because it requests a write and one because it asks for a field the graph does not hold. Both are scored on refusal, which passes when the generated text either declares the question unanswerable or fails the read-only guard. An explicit refusal and an attempted write count alike, and the result file records the generated query only on failure, so the two passing refusals leave no trace for review.
 
-Generation runs at temperature zero, which does not make the arm reproducible. Seven runs returned ten of eleven four times and eleven of eleven three times. Every failing run failed the same lookup, where the query collects a relationship property without binding the relationship and Memgraph rejects it as an unbound variable. One unstable question describes the arm better than a drifting score would, and an invalid query is a better failure than a plausible wrong answer.
+Generation runs at temperature zero, which does not make this scoring arm reproducible. Seven runs returned ten of eleven four times and eleven of eleven three times. Every failing run failed the same lookup, where the query collects a relationship property without binding the relationship and Memgraph rejects it as an unbound variable. One unstable question describes this scoring arm better than a drifting score would, and an invalid query is a better failure than a plausible wrong answer.
 
 The test suite covers the deterministic parts of the layer, including the read-only guard, routing, and normalization, which removes order clauses the database cannot satisfy after an aggregate while keeping them where a limit depends on the order.
 
@@ -121,6 +121,6 @@ Temperature scaling averages 1.113, with fold values from 1.05 to 1.238, and rai
 
 That improvement does not show the outcome layer works. Slopes well below one pull every score toward the base rate, so most of the lower calibration error is shrinkage rather than added signal. Neither scaling changes the ranking, which leaves the area under the curve of 0.562 as the measure of discrimination. The Platt Brier score passes the constant by 0.0004, and the outcome accuracy of 74.8 percent, with an interval from 72.1 to 77.4 percent, contains the 74.6 percent baseline.
 
-The generator settles what those figures could have been. Success is drawn against a probability the generator computes from the profile, the regimen, and the patient risk factors. Marginalizing the year and the regimen, neither of which retrieval observes, gives the best score any predictor reading the seven retrieved features could reach. That ceiling is an area under the curve of 0.668, a Brier score of 0.176, and an accuracy of 75.5 percent, against 0.562, 0.1951, and 74.8 percent for retrieval. It is computed by `outcome_ceiling` in `validation.py` and scored by the same functions the arm is scored with, so the two sit on one scale.
+The generator settles what those figures could have been. Success is drawn against a probability the generator computes from the profile, the regimen, and the patient risk factors. Marginalizing the year and the regimen, neither of which retrieval observes, gives the best score any predictor reading the seven retrieved features could reach. That ceiling is an area under the curve of 0.668, a Brier score of 0.176, and an accuracy of 75.5 percent, against 0.562, 0.1951, and 74.8 percent for retrieval. It is computed by `outcome_ceiling` in `validation.py` and scored by the same functions the outcome scoring arm is scored with, so the two sit on one scale.
 
 The gap is the finding. Discrimination available above chance is 0.168 and retrieval holds 0.062 of it, so close to two thirds of the reachable signal is lost. Accuracy barely separates the three figures because the base rate sits near three quarters and a threshold of one half leaves the reported probability almost constant, falling below that threshold on 34 of the 1,000 cases. This is the reverse of the regimen layer, where the ceiling and the baseline sat within half a point of each other and the cohort was the binding constraint. Here the case base carries signal the neighborhood weighting does not recover, which makes the weights the part worth revisiting rather than the data.

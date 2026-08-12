@@ -71,7 +71,7 @@ The figure below follows one strain from its mutations to the genes and drugs th
 
 Every figure below is written to `Evaluation/validation_results.json` by the commands in [DEPLOYME.md](DEPLOYME.md) section 6. Full per-tier and per-drug scoring sits in [EVALUATION.md](EVALUATION.md).
 
-| Arm | Measure | Score | Floor | Ceiling |
+| Scoring arm | Measure | Score | Floor | Ceiling |
 | --- | --- | ---: | ---: | ---: |
 | Tier classification | accuracy against phenotype | 83.4% | 73.3% majority | 83.5% catalog |
 | Tier classification | balanced accuracy | 67.4% | 25.0% | 67.9% catalog |
@@ -99,7 +99,7 @@ The validation set is the 65,588 samples carrying a usable drug-susceptibility r
 
 The release carries two phenotype sources. Drug susceptibility testing, abbreviated DST, is the reference method run in clinical laboratories, and the UKMYC plate is a broth microdilution assay read across a fixed drug panel. The two agree on 94.8 percent of the 21,568 isolates measured by both, which sets a label-noise floor beneath every accuracy figure above. They disagree on 1,117 isolates, and on all 1,117 the UKMYC profile is the less severe of the two, never the more severe. The exploratory analysis separates how much of that follows from the narrower UKMYC panel.
 
-The catalog does not classify every call as resistant or susceptible. Some are uncertain and some failed, and both arms count these as not resistant, matching the treatment of isolates with no genotypic call. The exposure is worth naming. Across the release, 31,517 isolates carry at least one uncertain call and 4,957 at least one failed call, giving 33,782 with either. On rifampin and isoniazid, the two drugs that define MDR, the counts are 2,927 uncertain, 712 failed, and 3,630 with either. Reading uncertain calls as resistant would move every figure in both arms.
+The catalog does not classify every call as resistant or susceptible. Some are uncertain and some failed, and both comparison arms count these as not resistant, matching the treatment of isolates with no genotypic call. The exposure is worth naming. Across the release, 31,517 isolates carry at least one uncertain call and 4,957 at least one failed call, giving 33,782 with either. On rifampin and isoniazid, the two drugs that define MDR, the counts are 2,927 uncertain, 712 failed, and 3,630 with either. Reading uncertain calls as resistant would move every figure in both comparison arms.
 
 The synthetic patient cases are generated in code and are deterministic under a fixed seed.
 
@@ -107,17 +107,19 @@ The synthetic patient cases are generated in code and are deterministic under a 
 
 Scoring runs through two entry points, both detailed in [DEPLOYME.md](DEPLOYME.md) section 6.
 
+The word arm carries two related meanings in this project, and a qualifier always separates them. A scoring arm is one component of the evaluation, so the tier arm, the per-drug arm, the case-based arm, and the expert-system arm each write their own result block. A comparison arm is one side of a scored pair inside such a component, where the rule engine is measured against the WHO catalog on the same isolates through the same functions in `Evaluation/metrics.py`. The catalog side is the reference arm, and it reads precomputed calls rather than deriving them from graded variants. Because the two comparison arms cover the same isolates they are not independent, which is why every comparison here uses a paired test.
+
 ```bash
-python Evaluation/validation.py   # tier, expert-system, and case-based arms
+python Evaluation/validation.py   # tier, expert-system, and case-based scoring arms
 python Evaluation/metrics.py      # per-drug scoring
 pytest tests/test_core.py         # 127 tests, no database, API, or datasets
 ```
 
-Every scoring primitive comes from `Evaluation/metrics.py`, so the tier arm and the per-drug arm measure the same quantities. The reference arm differs between them. The tier arm reads the catalog profile from `PREDICTIONS.parquet` and the per-drug arm reads it from `EFFECTS.parquet`, so both of its columns come from one table. Compare within an arm rather than across the two files.
+Every scoring primitive comes from `Evaluation/metrics.py`, so the tier arm and the per-drug arm measure the same quantities. What differs is the table each one reads for its reference. The tier arm takes the catalog profile from `PREDICTIONS.parquet` and the per-drug arm takes it from `EFFECTS.parquet`, so within either scoring arm both columns come from a single table. Figures are therefore comparable inside one scoring arm and not across the two files.
 
-The CRyPTIC, per-drug, and case-based arms are deterministic under a fixed seed of 42, and repeated runs reproduce every digit in the two result files, apart from the last decimal place of one p-value on some hardware, which moves with floating-point summation order. The expert-system arm calls a live model and is the one figure expected to change, so it is reported beside the model that generated it. Seven runs returned ten of eleven four times and eleven of eleven three times.
+The CRyPTIC, per-drug, and case-based scoring arms are deterministic under a fixed seed of 42, and repeated runs reproduce every digit in the two result files, apart from the last decimal place of one p-value on some hardware, which moves with floating-point summation order. The expert-system scoring arm calls a live model and is the one figure expected to change, so it is reported beside the model that generated it. Seven runs returned ten of eleven four times and eleven of eleven three times.
 
-The project builds up in three levels. The test suite needs only `pip install -r requirements-dev.txt`. Adding Docker and an Anthropic API key activates the demo and the expert-system arm on the seed graph, with no datasets downloaded. Adding the `Datasets/` folder unlocks the CRyPTIC and per-drug arms.
+The project builds up in three levels. The test suite needs only `pip install -r requirements-dev.txt`. Adding Docker and an Anthropic API key activates the demo and the expert-system scoring arm on the seed graph, with no datasets downloaded. Adding the `Datasets/` folder unlocks the CRyPTIC and per-drug scoring arms.
 
 ### Exploratory analysis
 
@@ -151,7 +153,7 @@ The directions fall into two groups, the data the system can reach and the way i
 
 The largest data gap is the synthetic case base. Validating the case-based layer against the TB Portals dataset, which carries real treatment outcomes, would replace the cohort where real signal is most needed. Real data would strengthen the result without necessarily raising accuracy, since resistant cases stay rare even in large collections. Separately, training a model on the full genome-wide variant table and the minimum inhibitory concentration magnitudes would test how much of the genotype-phenotype mismatch can be explained beyond the curated catalog.
 
-On scoring, the simplest change is to score the regimen layer against outcome directly, which needs no additional data and fixes the metric mismatch at its source. The outcome layer now carries a measured ceiling, and the gap beneath it is wide enough to make the similarity weights the first thing to tune, scored against that ceiling rather than against a perfect one. Confidence-gated deferral would extend the abstention the engine already performs when its neighbors carry nothing applicable. A sparse neighborhood would hand the case to the rule engine, and the arm would report coverage beside accuracy, which turns rare-class scarcity into calibrated behavior rather than silent error.
+On scoring, the simplest change is to score the regimen layer against outcome directly, which needs no additional data and fixes the metric mismatch at its source. The outcome layer now carries a measured ceiling, and the gap beneath it is wide enough to make the similarity weights the first thing to tune, scored against that ceiling rather than against a perfect one. Confidence-gated deferral would extend the abstention the engine already performs when its neighbors carry nothing applicable. A sparse neighborhood would hand the case to the rule engine, and that scoring arm would report coverage beside accuracy, which turns rare-class scarcity into calibrated behavior rather than silent error.
 
 The whole-class injectable rule groups amikacin, kanamycin, and capreomycin together, and the per-drug scoring shows it over-calls all three against measured phenotype. The cost falls almost entirely on two of them. Amikacin and capreomycin lose 31.7 and 33.7 points of precision for sensitivity gains of 2.2 and 4.2, while kanamycin loses 3.9 for a gain of 0.2. That asymmetry is what the expansion would produce if kanamycin, the most frequently resistant of the three, is mainly the source of the added calls rather than their recipient. Tying cross-resistance to the gene instead, with rrs conferring resistance across the class and eis favoring kanamycin, would recover precision without moving any tier.
 
